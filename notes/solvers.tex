@@ -1,0 +1,43 @@
+\documentclass{article}
+\usepackage{amsmath}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+\newcommand{\trans}[1]{#1^{\mathrm{T}}}
+\begin{document}
+\title{Notes on solvers}
+\author{HUO Zhuoxi}
+\maketitle
+\begin{equation}
+  \vect{H} = \sum_k \vect{A}_k \vect{H}_k \text{,}
+\end{equation}
+where $\vect{H}$ and $\vect{A}_k$ are $N \times M$ matrices, $\vect{H}_k$ is $M \times M$ square circulant matrix.
+\begin{equation}
+  A_{k,i,j}=\begin{cases}
+  1\text{, if $d_i$ is aligned with $f_j$ in the $k$-th cluster,}\\
+  0\text{, otherwise.}
+  \end{cases}
+\end{equation}
+
+Modulation equation:
+\begin{equation}
+  \vect{d} = \vect{H}\vect{f} + \vect{n} \text{,}
+\end{equation}
+where $\vect{d}$ is observed data, $\vect{H}$ is modulation kernel matrix, $\vect{f}$ is object and $\vect{n}$ is dark current.
+
+Iterative solution:
+\begin{equation}
+  \vect{f}^{\left(l\right)} = \frac{\vect{f}^{\left(l-1\right)}}{\vect{\omega}}\left[\trans{\vect{H}}\frac{\vect{d}}{\vect{H}\vect{f}^{\left(l-1\right)}+\vect{n}}\right]\text{,}
+\end{equation}
+where
+\begin{equation}
+  \omega_j = \sum_i H_{i,j} \text{.}
+\end{equation}
+
+\begin{equation}
+  \begin{split}
+    \vect{H}\vect{f}
+    & = \sum_k \vect{A}_k \vect{H}_k \vect{f} \\
+    & = \sum_k \vect{A}_k \left(f \ast h_k^\star\right)
+  \end{split}
+\end{equation}
+
+\end{document}
