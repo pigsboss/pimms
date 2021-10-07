@@ -1,6 +1,5 @@
 from pimms.base import *
 
-
 def hdr_reinhard(I, m=None, f=0., c=0., a=0.):
     """HDR to LDR (dynamic range reduction) by Reinhard & Devlin 2005.
 I - input image (HDR image), shape: (3, H, W), (H, W, 3) or (H, W)
@@ -17,14 +16,14 @@ a - light adaptation parameter, [0, 1]
         k    = (Lmax - Lavg)/(Lmax - Lmin)
         m    = .3 + .7*(k**1.4)
     if np.ndim(I) == 3:
-        lum = .2126*I[:,:,0] + .7152*I[:,:,1] + .0722*I[:,:,2]  # (Rec. 709, HDTV)
+        lum = .2126*I[:,:,0] + .7152*I[:,:,1] + .0722*I[:,:,2] # (Rec. 709, HDTV)
         lav = np.mean(lum)
         l = np.empty_like(I)
         g = np.empty_like(I)
         for i in range(3):
             cav = np.mean(I[:,:,i])
             l[:,:,i] = c*I[:,:,i] + (1.-c)*lum
-            g[:,:,i] = c*cav      + (1.-c)*lav
+            g[:,:,i] = c*cav + (1.-c)*lav
         O = a*l + (1.-a)*g
     else:
         O = a*I + (1.-a)*np.mean(I)
