@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 import healpy as hp
 from pymath.common import norm
 
+class SyntheticAperture(object):
+    """Simple
+    def __init__(self):
+        pass
+    def
+
 def parabolic_reflector_experiment(source, detector, resolution=129, nside=32768, diameter=1., fnumber=10., wavelength=5e-7):
     """Simple parabolic reflector experiment.
 Reflector model:
