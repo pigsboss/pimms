@@ -6,8 +6,9 @@ import healpy as hp
 from pymath.common import norm
 
 class SyntheticAperture(object):
-    """Simple
-    def __init__(self):
+    """Simplified optical model for synthetic-aperture system.
+"""
+    def __init__(self, baseline=None, ):
         pass
     def
 
