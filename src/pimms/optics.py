@@ -8,10 +8,73 @@ from pymath.common import norm
 class SyntheticAperture(object):
     """Simplified optical model for synthetic-aperture system.
 """
-    def __init__(self, baseline=None, ):
+    def __init__(self, bext=None, dext=None):
         pass
-    def
 
+class BeamCompressor(object):
+    """Simplified optical model for beam compressor system.
+
+Simplified beam compressor model:
+The beam compressor model is a combination of a primary concave parabolic mirror and a
+secondary convex parabolic mirror that share the same focus.
+The focus lies at the origin of the coordinate system.
+Equation of the primary mirror:
+z = -f + (x^2 + y^2)/4/f,
+where f is the focal length of the primary mirror.
+Given the f-number of the primary mirror fn, its diameter
+d = f / fn,
+and the diameter of the secondary mirror
+d' = d/r,
+where r is the compression ratio.
+So the focal length of the secondary mirror
+f' = f/r,
+thus its equation is
+z = -f/r + (x^2 + y^2)*r/4/f.
+Finally there is a hole at the center of the primary mirror with the same diameter as the
+secondary mirror.
+
+"""
+    def __init__(self, diameter=1., ratio=2., fnumber=10., detector=-10., resolution=129):
+        """Construct a beam compressor model.
+
+diameter   - diameter of primary mirror, in meter.
+ratio      - beam compression ratio, i.e., primary_diameter : secondary_diameter.
+fnumber    - f-number of primary mirror.
+detector   - z-coordinate of beam amplitude detector.
+resolution - spatial resolution of detector in term of pixels.
+"""
+        self.d=diameter
+        self.f=diameter*fnumber
+        self.r=ratio
+        self.dpos=detector
+        self.dpts=resolution
+
+    def __call__(self, phi, theta, wavelength=5e-7):
+        """Compute amplitude sampled by predefined detector.
+
+Source model:
+Monochromatic point source at infinity, with azimuthal angle (from x-axis) and polar angle
+(from z-axis) being phi and theta.
+
+Input arguments;
+phi and theta  - angular coordiante of point source.
+wavelength     - wavelength of point source, in meter.
+
+Returns:
+amp and pha - detected amplitude and phase angles.
+"""
+        xgv = ((np.arange(self.dpts)+.5)/self.dpts - .5)*self.d
+        ygv = ((np.arange(self.dpts)+.5)/self.dpts - .5)*self.d
+        xs, ys = np.meshgrid(xgv, ygv)
+        rs = (xs**2.+ys**2.)**.5
+        z_0 = (xs**2.+ys**2.)/4./self.f - self.f               # z-coordinates of primary mirror
+        z_1 = (xs**2.+ys**2.)*self.r/4./self.f - self.f/self.r # z-coordinates of secondary mirror
+        z_1_max = np.max(z_1)
+        x01 = xs+(z_1_max-z_0)*np.tan(theta)*np.cos(phi)
+        y01 = ys+(z_1_max-z_0)*np.tan(theta)*np.sin(phi)
+        amp_0 = np.double((rs>(self.d/self.r*.5)) & (rs<=(self.d*.5)) & ((x01**2.+y01**2.)**.5>(self.d*.5/self.r)))
+        return amp_0
+        
 def parabolic_reflector_experiment(source, detector, resolution=129, nside=32768, diameter=1., fnumber=10., wavelength=5e-7):
     """Simple parabolic reflector experiment.
 Reflector model:
@@ -22,7 +85,7 @@ z = -f + (x^2 + y^2)/4/f,
 where f is the focal length of the paraboloid.
 
 Source model:
-Monochromatic pointed source, emitting scalar spherical waves.
+Monochromatic point source, emitting scalar spherical waves.
 wave function: 
 U(x, y, z, t) = 1/r*exp(i*(omega*t-k*r)),
 where omega = 2*pi*c/lambda and k = 2*pi/lambda.
