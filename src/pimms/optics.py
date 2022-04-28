@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import healpy as hp
 from pymath.common import norm
+import pymath.quaternion as quat
 
 class SyntheticAperture(object):
     """Simplified optical model for synthetic-aperture system.
@@ -65,16 +66,91 @@ amp and pha - detected amplitude and phase angles.
 """
         xgv = ((np.arange(self.dpts)+.5)/self.dpts - .5)*self.d
         ygv = ((np.arange(self.dpts)+.5)/self.dpts - .5)*self.d
-        xs, ys = np.meshgrid(xgv, ygv)
-        rs = (xs**2.+ys**2.)**.5
-        z_0 = (xs**2.+ys**2.)/4./self.f - self.f               # z-coordinates of primary mirror
-        z_1 = (xs**2.+ys**2.)*self.r/4./self.f - self.f/self.r # z-coordinates of secondary mirror
-        z_1_max = np.max(z_1)
-        x01 = xs+(z_1_max-z_0)*np.tan(theta)*np.cos(phi)
-        y01 = ys+(z_1_max-z_0)*np.tan(theta)*np.sin(phi)
-        amp_0 = np.double((rs>(self.d/self.r*.5)) & (rs<=(self.d*.5)) & ((x01**2.+y01**2.)**.5>(self.d*.5/self.r)))
-        return amp_0
+        x0, y0 = np.meshgrid(xgv, ygv) # meshgrid on primary mirror surface
+        rs  = (x0**2.+y0**2.)**.5
+        z0  = (x0**2.+y0**2.)/4./self.f - self.f               # z-coordinates of primary mirror
+        z1m = self.d**2./self.r/self.f/16. - self.f/self.r
+        x01 = x0+(z1m-z0)*np.tan(theta)*np.cos(phi)
+        y01 = y0+(z1m-z0)*np.tan(theta)*np.sin(phi)
+        # find normal direction of primary mirror
+        # surface equation: f(x, y, z) = 0,
+        # normal vector: (fx(x0, y0, z0), fy(x0, y0, z0), fz(x0, y0, z0)).
+        xn = x0/2./self.f
+        yn = y0/2./self.f
+        zn = -1.
+        phin, thetan, _ = quat.xyz2ptr(xn, yn, zn) # Euler's angles of normal vector
+        qz2n = quat.multiply(
+            quat.from_angles(phin, thetan),
+            quat.conjugate(quat.from_angles(0., np.pi/2.))) # Quaternion that rotates z-axis to normal vector
+        # incident vector:
+        xi = -np.sin(theta)*np.cos(phi)
+        yi = -np.sin(theta)*np.sin(phi)
+        zi = -np.cos(theta)
+        ri = quat.rotate(quat.conjugate(qz2n), [xi, yi, zi]) # incident vector in local csys, where normal vector being the z-axis
+        rr = quat.rotate(qz2n, [ri[0], ri[1], -ri[2]]) # reflected vector in lab csys.
         
+        # find arrival coordinates on secondary mirror (x1, y1, z1)
+        # parametric equation of light ray from primary mirror to secondary mirror:
+        # x = x0 + rr[0]*t
+        # y = y0 + rr[1]*t
+        # z = z0 + rr[2]*t
+        # and z = (x^2+y^2)*r/4/f - f/r (secondary mirror surface equation)
+        # A*t^2 + B*t + C = 0, provided rr[2]>0, we have t>0.
+        A = (rr[0]**2. + rr[1]**2.)*self.r/self.f/4.
+        B = (rr[0]*x0  + rr[1]*y0 )*self.r/self.f/2. - rr[2]
+        C = (x0**2.    + y0**2.   )*self.r/self.f/4. - self.f/self.r - z0
+        D = B**2. - 4.*A*C
+        t = np.zeros_like(x0)
+        m1 = np.isclose(A, 0.)
+        m2 = np.isclose(C, 0.)
+        t[~m1] = (-B[~m1] - (B[~m1]**2. - 4.*A[~m1]*C[~m1])**.5)/A[~m1]/2.
+        t[m1&(~m2)] = -B[m1&(~m2)]/C[m1&(~m2)]
+        x1 = x0+rr[0]*t
+        y1 = y0+rr[1]*t
+        z1 = z0+rr[2]*t
+        
+        # normal vector on secondary mirror:
+        xn = x1*self.r/2./self.f
+        yn = y1*self.r/2./self.f
+        zn = -1.
+        phin, thetan, _ = quat.xyz2ptr(xn, yn, zn)
+        qz2n = quat.multiply(
+            quat.from_angles(phin, thetan),
+            quat.conjugate(quat.from_angles(0., np.pi/2.)))
+        ri = quat.rotate(quat.conjugate(qz2n), rr)
+        rr = quat.rotate(qz2n, [ri[0], ri[1], -ri[2]])
+        # find coordinates on exit aperture
+        z0m = (self.d/self.r)**2./16./self.f - self.f
+        t   = (z0m - z1) / rr[2]
+        x2  = x1+rr[0]*t
+        y2  = y1+rr[1]*t
+        # find transmittance map
+        tran = np.double(
+            (rs>(self.d/self.r*.5)) &
+            (rs<=(self.d*.5)) &
+            ((x01**2.+y01**2.)**.5>(self.d*.5/self.r)) &
+            ((x2**2.+y2**2.)**.5<=(self.d*.5/self.r)))
+        # find arrival coordinates on detector plane
+        t  = (self.dpos - z1) / rr[2]
+        x3 = x1+rr[0]*t
+        y3 = y1+rr[1]*t
+        # total OP
+        t   = xi*x0+yi*y0+zi*z0
+        op0 = t
+        op1 = ((x1-x0)**2. + (y1-y0)**2. + (z1-z0)**2.)**.5
+        op2 = ((x3-x1)**2. + (y3-y1)**2. + (self.dpos-z1)**2.)**.5
+        opd = op0+op1+op2 - np.mean(op0+op1+op2)
+        re  = tran*np.cos(2.*np.pi*opd/wavelength)
+        im  = tran*np.sin(2.*np.pi*opd/wavelength)
+        xid = np.int64((x3+self.d/2.)/self.d*self.dpts)
+        yid = np.int64((y3+self.d/2.)/self.d*self.dpts)
+        pid = yid*self.dpts+xid
+        remap = np.bincount(pid.ravel(), weights=re.ravel(), minlength=self.dpts*self.dpts)
+        immap = np.bincount(pid.ravel(), weights=im.ravel(), minlength=self.dpts*self.dpts)
+        amp = np.reshape((remap**2.+immap**2.)**.5, (self.dpts, self.dpts))
+        pha = np.ma.masked_array(np.reshape(np.arctan2(immap, remap), (self.dpts, self.dpts)), mask=~np.bool_(amp>0))
+        return amp, pha
+
 def parabolic_reflector_experiment(source, detector, resolution=129, nside=32768, diameter=1., fnumber=10., wavelength=5e-7):
     """Simple parabolic reflector experiment.
 Reflector model:
