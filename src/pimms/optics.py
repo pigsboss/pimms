@@ -6,10 +6,60 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
-class SyntheticAperture(object):
-    """Simplified optical model for synthetic-aperture system.
+class SIM(object):
+    """Simplified Michelson stellar interferometer model.
+
+Simplified interferometer model:
+
+      M10                                      M11
+ |    --   |                              |    --    |
+ |   /| \  |                              |   / |\   |
+ |  / ||---+------------- B --------------+----|| \  |
+ | /  |   \|                              | /   |  \ |
+ ---- |  ---- M00                     M01 ----  |  ----
+      |              |--- B' ---|               |
+      |                  ____ M5                |
+      \--------------\   /  \   /-------------- /
+     M20         M30 |  /|  |\  | M31            M21
+                     | / |  | \ |
+                     |/  |  |  \|
+                    ---- \  / ----- M4
+                          ||
+                          ||
+                          \/
+                          -- D0
+
+M00 (M01) - Concave parabolic mirror, primary mirror of left (right) collector.
+M10 (M11) - Convex parabolic mirror, secondary mirror of left (right) collector.
+M20 (M21) - Plane mirror, periscope mirror of left (right) collector.
+M30, M31  - Plane mirrors, periscope mirrors of beam combiner.
+M4        - Concave parabolic mirror, primary mirror of beam combiner.
+M5        - Convex hyperbolic mirror, secondary mirror of beam combiner.
+D0        - Pixel detector array.
+
+Left collector contains M00, M10 and M20.
+M20 has tip and tilt actuators.
+
+Right collector contains M01, M11 and M21.
+M21 also has tip and tilt actuators.
+
+Beam combiner contains M30, M31, M4, M5 and D0.
+M30 and M31 both have tip and tilt actuators.
+
+Both collectors and beam combiner have 3 translational as well as 3 rotational
+degrees of freedom individually.
+
+Coordinate system of beam combiner as well as the whole interferometer:
+origin: focus of primary mirror.
+z-axis: along principal optical axis of beam combining telescope, from D0 to M5.
+y-axis: along the interferometer baseline, from M30 to M31.
+
+Coordinate system of collector:
+origin: focus of primary mirror.
+z-axis: along principal optical axis of beam compressor, from M10 (M11) to M20 (M21).
+x-axis: along beam reflected by M20 (M21).
 """
-    def __init__(self, bext=None, dext=None):
+    def __init__(self):
         pass
 
 class BeamCompressor(object):
