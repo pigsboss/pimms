@@ -9,7 +9,7 @@ import pymath.quaternion as quat
 class SIM(object):
     """Simplified Michelson stellar interferometer model.
 
-Simplified interferometer model:
+1. Overall model
 
       M10                                      M11
  |    --   |                              |    --    |
@@ -37,30 +37,42 @@ M4        - Concave parabolic mirror, primary mirror of beam combiner.
 M5        - Convex hyperbolic mirror, secondary mirror of beam combiner.
 D0        - Pixel detector array.
 
-Left collector contains M00, M10 and M20.
+2. Structual models
+2.1 Left collector
+The left collector contains M00, M10 and M20.
 M20 has tip and tilt actuators.
-
-Right collector contains M01, M11 and M21.
+2.2 Right collector
+The right collector contains M01, M11 and M21.
 M21 also has tip and tilt actuators.
-
-Beam combiner contains M30, M31, M4, M5 and D0.
+2.3 Beam combiner
+The beam combiner contains M30, M31, M4, M5 and D0.
 M30 and M31 both have tip and tilt actuators.
+2.4 Degrees of freedom
+Each structure has 3 translational as well as 3 rotational degrees of freedom.
 
-Both collectors and beam combiner have 3 translational as well as 3 rotational
-degrees of freedom individually.
+3. Optical models
+3.1 Photon collecting telescopes
+M00 (M01) and M10 (M11) constitute the left (right) collecting telescope.
+3.2 Periscopes
+M20 (M21) and M30 (M31) constitute the left (right) periscope.
+3.3 Beam combining telescope
+M4 and M5 constitute the beam combining telescope.
 
-Coordinate system of beam combiner as well as the whole interferometer:
+4. Coordinate systems
+4.1 Coordinate system of beam combiner as well as the whole interferometer
 origin: focus of primary mirror.
 z-axis: along principal optical axis of beam combining telescope, from D0 to M5.
 y-axis: along the interferometer baseline, from M30 to M31.
-
-Coordinate system of collector:
+4.2 Coordinate system of collector
 origin: focus of primary mirror.
 z-axis: along principal optical axis of beam compressor, from M10 (M11) to M20 (M21).
 x-axis: along beam reflected by M20 (M21).
 """
     def __init__(self):
         pass
+    def __call__(self):
+        pass
+    
 
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
