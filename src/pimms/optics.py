@@ -6,6 +6,15 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
+class SymmetricQuadricMirror(object):
+    """Symmetric quadric mirror model.
+
+References:
+ - https://en.wikipedia.org/wiki/Fresnel_equations#Amplitude_or_field_equations
+"""
+    def __init__(self, ):
+        pass
+    
 class SIM(object):
     """Simplified Michelson stellar interferometer model.
 
@@ -72,7 +81,7 @@ x-axis: along beam reflected by M20 (M21).
         pass
     def __call__(self):
         pass
-    
+
 
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
