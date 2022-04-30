@@ -2,18 +2,160 @@
 """
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.tri as mtri
 import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
+
 class SymmetricQuadricMirror(object):
     """Symmetric quadric mirror model.
 
-References:
- - https://en.wikipedia.org/wiki/Fresnel_equations#Amplitude_or_field_equations
-"""
-    def __init__(self, ):
-        pass
+    1. Plane mirror
+    center of mirror is at origin.
+    mirror lies on xOy plane.
+    norm vector is along z-axis.
+    Equation: f(x,y,z) = z = 0.
+    Parameters:
+    d_in  - inside diameter
+    d_out - outside diameter
+    r     - reflectance, in (z+, z-)
+    f=0
+    g=0
+    
+    2. Parabolic mirror
+    focus of mirror is at origin.
+    mirror opens upward (+z direction).
+    Equation: f(x,y,z) = x^2 + y^2 - 4f z - 4f^2 = 0.
+    Parameters:
+    d_in  - inside diameter
+    d_out - outside diameter
+    r     - reflectance, in (z+, z-)
+    f     - focal length
+    g=0
+    
+    3. Hyperbolic mirror
+    focus on the same side is at origin.
+    mirror opens upward (+z direction).
+    Equation: f(x,y,z) = x^2 + y^2 + (a^2-c^2)/a^2 z^2 + 2(a^2-c^2)c/a^2 z - (a^2-c^2)^2/a^2 = 0,
+    where a = (g-f)/2 and c = (g+f)/2.
+    Parameters:
+    d_in  - inside diameter
+    d_out - outside diameter
+    r     - reflectance, in (z+, z-)
+    f     - focal length, distance between mirror center and focus on the same side
+    g     - focal length, distance between mirror center and focus on the other side
+    """
+    def __init__(self, d_in, d_out, r=(1., 1.), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.]):
+        """Construct symmetric quadric mirror object.
+
+        Arguments:
+        d_in  - inside diameter.
+        d_out - outside diameter.
+        r     - reflectance, in (z+, z-), i.e., reflectance of top and bottom surface of the mirror.
+        f     - focal length, for parabolic and hyperbolic mirrors.
+        g     - distance to the other focus, for hyperbolic mirror only.
+        p     - position in lab coordinate system.
+        q     - attitude quaternion to convert coordinate of mirror's fixed csys to lab csys.
+                example: r' = qrq' + p,
+                where r is coordinate of mirror's fixed csys, r' is coordinate of lab csys,
+                p is position of the mirror in lab csys and q is the attitude quaternion.
+        """
+        self.d_in    = d_in
+        self.d_out   = d_out
+        self.reflect = r
+        self.f       = f
+        self.g       = g
+        self.p       = p
+        self.q       = q
+        if np.isclose(self.f, 0.):
+            self.coef = {
+                'x2':0.,
+                'y2':0.,
+                'z2':0.,
+                'xy':0.,
+                'xz':0.,
+                'yz':0.,
+                'x' :0.,
+                'y' :0.,
+                'z' :1.,
+                'c' :0.
+            }
+        elif np.isclose(self.g, 0.):
+            self.coef = {
+                'x2':1.,
+                'y2':1.,
+                'z2':0.,
+                'xy':0.,
+                'xz':0.,
+                'yz':0.,
+                'x' :0.,
+                'y' :0.,
+                'z' :-4.*self.f,
+                'c' :-4.*self.f**2.
+            }
+        else:
+            a = (self.g-self.f)*.5
+            c = (self.g+self.f)*.5
+            self.coef = {
+                'x2':1.,
+                'y2':1.,
+                'z2':(a**2.-c**2.)/a**2.,
+                'xy':0.,
+                'xz':0.,
+                'yz':0.,
+                'x' :0.,
+                'y' :0.,
+                'z' :2.*(a**2.-c**2.)*c/a**2.,
+                'c' :-(a**2.-c**2.)**2./a**2.
+            }
+
+    def draw(self, npts=128, return_only=False):
+        """Draw 3D surface plot of the mirror in lab csys.
+
+        Argument:
+        npts - number of sampling points along diameter of the mirror.
+        """
+        xgv = ((np.arange(npts)+.5)/npts - .5)*self.d_out
+        ygv = ((np.arange(npts)+.5)/npts - .5)*self.d_out
+        xs, ys = np.meshgrid(xgv, ygv)
+        rs = (xs**2.+ys**2.)**.5
+        inside = (rs<=(self.d_out*.5)) & (rs>=(self.d_in*.5))
+        xs = xs[inside].ravel()
+        ys = ys[inside].ravel()
+        if np.isclose(self.f, 0.):
+            zs = np.zeros_like(xs)
+        elif np.isclose(self.g, 0.):
+            zs = -(self.coef['x2']*xs**2. + self.coef['y2']*ys**2. + self.coef['c']) / self.coef['z']
+        else:
+            a = self.coef['z2']
+            b = self.coef['z']
+            c = self.coef['x2']*xs**2. + self.coef['y2']*ys**2. + self.coef['c']
+            zs = (-b-(b**2.-4.*a*c)**.5)/2./a
+        tri = mtri.Triangulation(xs, ys)
+        xc = xs[tri.triangles].mean(axis=1)
+        yc = ys[tri.triangles].mean(axis=1)
+        rc = (xc**2.+yc**2.)**.5
+        mask = np.where((rc>(self.d_out*.5)) | (rc<(self.d_in*.5)), 1, 0)
+        tri.set_mask(mask)
+        R = quat.rotate(self.q, [xs,ys,zs])
+        X = R[0]+self.p[0]
+        Y = R[1]+self.p[1]
+        Z = R[2]+self.p[2]
+        tri.x = X
+        tri.y = Y
+        if not return_only:
+            fig = plt.figure()
+            ax  = fig.add_subplot(111, projection='3d')
+            ax.plot_trisurf(tri, Z)
+            sz = np.max([X.max()-X.min(), Y.max()-Y.min(), Z.max()-Z.min()])
+            ax.set_xlim(X.mean()-sz*.6, X.mean()+sz*.6)
+            ax.set_ylim(Y.mean()-sz*.6, Y.mean()+sz*.6)
+            ax.set_zlim(Z.mean()-sz*.6, Z.mean()+sz*.6)
+            plt.show()
+        return X,Y,Z
+    def __call__(self):
+        return intersection, reflected_direction
     
 class SIM(object):
     """Simplified Michelson stellar interferometer model.
