@@ -45,7 +45,7 @@ class SymmetricQuadricMirror(object):
     f     - focal length, distance between mirror center and focus on the same side
     g     - focal length, distance between mirror center and focus on the other side
     """
-    def __init__(self, d_in, d_out, r=(1., 1.), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.]):
+    def __init__(self, d_in, d_out, r=(1., 1.), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
         """Construct symmetric quadric mirror object.
 
         Arguments:
@@ -59,14 +59,16 @@ class SymmetricQuadricMirror(object):
                 example: r' = qrq' + p,
                 where r is coordinate of mirror's fixed csys, r' is coordinate of lab csys,
                 p is position of the mirror in lab csys and q is the attitude quaternion.
+        name  - human readable name assigned to the mirror.
         """
         self.d_in    = d_in
         self.d_out   = d_out
         self.reflect = r
         self.f       = f
         self.g       = g
-        self.p       = p
-        self.q       = q
+        self.p       = np.double(p).reshape((3,1))
+        self.q       = np.double(q).reshape((4,1))
+        self.name    = name
         if np.isclose(self.f, 0.):
             self.coef = {
                 'x2':0.,
@@ -155,18 +157,73 @@ class SymmetricQuadricMirror(object):
             plt.show()
         return tri, Z
     
-    def __call__(self):
-        return intersection, reflected_direction
+    def intersect(self, start, direction):
+        """Find intersection of incident beam and the mirror surface.
+
+        Arguments:
+        start     - starting point vector (lab csys) of the incident beam.
+        direction - direction unit vector (lab csys) of the incident beam.
+
+        Returns:
+        intersection - coordinate of the intersection, or (np.nan, np.nan, np.nan) if the intersection
+                       does not exist.
+        distance     - distance between the starting point and the intersection, or np.inf if the
+                       intersection does not exist.
+        """
+        s,u = np.broadcast_arrays(
+            quat.rotate(quat.conjugate(self.q), np.double(start).reshape((3,-1))-self.p),
+            quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))-self.p))
+        a = self.coef['x2']*u[0]**2.  + self.coef['y2']*u[1]**2.  + self.coef['z2']*u[2]**2. + \
+            self.coef['xy']*u[0]*u[1] + self.coef['xz']*u[0]*u[2] + self.coef['yz']*u[1]*u[2]
+        b = 2.*self.coef['x2']*s[0]*u[0] + \
+            2.*self.coef['y2']*s[1]*u[1] + \
+            2.*self.coef['z2']*s[2]*u[2] + \
+            self.coef['xy']*(s[0]*u[1]+s[1]*u[0]) + \
+            self.coef['xz']*(s[0]*u[2]+s[2]*u[0]) + \
+            self.coef['yz']*(s[1]*u[2]+s[2]*u[1]) + \
+            self.coef['x']*u[0] + \
+            self.coef['y']*u[1] + \
+            self.coef['z']*u[2]
+        c = self.coef['x2']*s[0]**2.  + self.coef['y2']*s[1]**2.  + self.coef['z2']*s[2]**2. + \
+            self.coef['xy']*s[0]*s[1] + self.coef['xz']*s[0]*s[2] + self.coef['yz']*s[1]*s[2] + \
+            self.coef['x']*s[0] + self.coef['y']*s[1] + self.coef['z']*s[2] + self.coef['c']
+        a_is_0 = np.isclose(a, 0.)
+        b_is_0 = np.isclose(b, 0.)
+        t = np.zeros_like(s[0])
+        t[  a_is_0  &   b_is_0 ] = np.inf
+        minus_c_over_b = -c[a_is_0 & (~b_is_0)]/b[a_is_0 & (~b_is_0)]
+        t[  a_is_0  & (~b_is_0)] = np.where(minus_c_over_b>=0., minus_c_over_b, np.inf)
+        d = b**2. - 4.*a*c
+        d_lt_0 = np.bool_(d<0.)
+        t[(~a_is_0) &   d_lt_0 ] = np.inf
+        tp = (-b[(~a_is_0)&(~d_lt_0)]+d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
+        tm = (-b[(~a_is_0)&(~d_lt_0)]-d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
+        tp_lt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm<0.))
+        tp_lt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm>=0.))
+        tp_gt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm<0.))
+        tp_gt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm>=0.))
+        t[(~a_is_0) & (~d_lt_0) & tp_lt_0_and_tm_lt_0] = np.inf
+        t[(~a_is_0) & (~d_lt_0) & tp_lt_0_and_tm_gt_0] = tm[tp_lt_0_and_tm_gt_0]
+        t[(~a_is_0) & (~d_lt_0) & tp_gt_0_and_tm_lt_0] = tp[tp_gt_0_and_tm_lt_0]
+        t[(~a_is_0) & (~d_lt_0) & tp_gt_0_and_tm_gt_0] = np.min(
+            [tp[tp_gt_0_and_tm_gt_0],tm[tp_gt_0_and_tm_gt_0]], axis=0)
+        n = np.empty_like(s)
+        t_is_inf = np.isinf(t)
+        n[:, t_is_inf] = np.nan
+        n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
+        
+        return intersection, distance
 
 class OpticalAssembly(object):
     """Assembly of optical parts.
     """
-    def __init__(self, p=[0., 0., 0.], q=[1., 0., 0., 0.]):
+    def __init__(self, p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
         """Create empty optical assembly.
 
         Arguments:
-        p  - position in lab coordinate system.
-        q  - attitude quaternion in lab coordinate system.
+        p    - position in lab coordinate system.
+        q    - attitude quaternion in lab coordinate system.
+        name - human readable name assigned to the assembly.
 
         Example:
         r' = qrq' + p,
@@ -175,6 +232,7 @@ class OpticalAssembly(object):
         self.p = p
         self.q = q
         self.mirrors = []
+        self.name = name
     def add_mirror(self, mirror):
         self.mirrors.append(mirror)
     def move(self, dp):
@@ -217,6 +275,7 @@ class OpticalAssembly(object):
         """
         trigs = []
         Zs    = []
+        names = []
         xmin  = 0.
         xmax  = 0.
         ymin  = 0.
