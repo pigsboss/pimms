@@ -7,7 +7,6 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
-
 class SymmetricQuadricMirror(object):
     """Symmetric quadric mirror model.
 
@@ -110,19 +109,19 @@ class SymmetricQuadricMirror(object):
                 'c' :-(a**2.-c**2.)**2./a**2.
             }
 
-    def draw(self, npts=128, return_only=False):
-        """Draw 3D surface plot of the mirror in lab csys.
+    def draw(self, nside=32, axes=None, return_only=False, **kwargs):
+        """Draw triangulated 3D surface plot of the mirror in lab csys.
 
-        Argument:
-        npts - number of sampling points along diameter of the mirror.
+        Arguments:
+        nside - nside of healpix sampling points over the surface of the mirror.
+        axes  - predefined matplotlib axes object.
+        return_only - instead of plotting surface, return the triangles only.
         """
-        xgv = ((np.arange(npts)+.5)/npts - .5)*self.d_out
-        ygv = ((np.arange(npts)+.5)/npts - .5)*self.d_out
-        xs, ys = np.meshgrid(xgv, ygv)
+        theta_out = np.arcsin(.5527708)
+        theta_in  = np.arcsin(.5527708*self.d_in/self.d_out)
+        npix_start, npix_stop = hp.ang2pix(nside, [theta_in, theta_out], [0., np.pi*2.])
+        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_start, npix_stop)))*self.d_out
         rs = (xs**2.+ys**2.)**.5
-        inside = (rs<=(self.d_out*.5)) & (rs>=(self.d_in*.5))
-        xs = xs[inside].ravel()
-        ys = ys[inside].ravel()
         if np.isclose(self.f, 0.):
             zs = np.zeros_like(xs)
         elif np.isclose(self.g, 0.):
@@ -136,7 +135,7 @@ class SymmetricQuadricMirror(object):
         xc = xs[tri.triangles].mean(axis=1)
         yc = ys[tri.triangles].mean(axis=1)
         rc = (xc**2.+yc**2.)**.5
-        mask = np.where((rc>(self.d_out*.5)) | (rc<(self.d_in*.5)), 1, 0)
+        mask = np.where((rc>rs.max()) | (rc<rs.min()), 1, 0)
         tri.set_mask(mask)
         R = quat.rotate(self.q, [xs,ys,zs])
         X = R[0]+self.p[0]
@@ -145,19 +144,118 @@ class SymmetricQuadricMirror(object):
         tri.x = X
         tri.y = Y
         if not return_only:
-            fig = plt.figure()
-            ax  = fig.add_subplot(111, projection='3d')
-            ax.plot_trisurf(tri, Z)
+            if axes is None:
+                fig  = plt.figure()
+                axes = fig.add_subplot(111, projection='3d')
+            axes.plot_trisurf(tri, Z, **kwargs)
             sz = np.max([X.max()-X.min(), Y.max()-Y.min(), Z.max()-Z.min()])
-            ax.set_xlim(X.mean()-sz*.6, X.mean()+sz*.6)
-            ax.set_ylim(Y.mean()-sz*.6, Y.mean()+sz*.6)
-            ax.set_zlim(Z.mean()-sz*.6, Z.mean()+sz*.6)
+            axes.set_xlim(X.mean()-sz*.6, X.mean()+sz*.6)
+            axes.set_ylim(Y.mean()-sz*.6, Y.mean()+sz*.6)
+            axes.set_zlim(Z.mean()-sz*.6, Z.mean()+sz*.6)
             plt.show()
-        return X,Y,Z
+        return tri, Z
+    
     def __call__(self):
         return intersection, reflected_direction
-    
-class SIM(object):
+
+class OpticalAssembly(object):
+    """Assembly of optical parts.
+    """
+    def __init__(self, p=[0., 0., 0.], q=[1., 0., 0., 0.]):
+        """Create empty optical assembly.
+
+        Arguments:
+        p  - position in lab coordinate system.
+        q  - attitude quaternion in lab coordinate system.
+
+        Example:
+        r' = qrq' + p,
+        where r is vector in assembly fixed csys and r' is vector in lab csys.
+        """
+        self.p = p
+        self.q = q
+        self.mirrors = []
+    def add_mirror(self, mirror):
+        self.mirrors.append(mirror)
+    def move(self, dp):
+        """Move assembly in lab csys by displacement vector dp.
+
+        new position: p' = p + dp
+        """
+        for m in self.mirrors:
+            m.p = m.p + dp
+        self.p = self.p + dp
+        return self.p
+    def rotate(self, dq):
+        """Rotate assembly around its fixed csys origin by dq.
+
+        new attitude: q' = dq q dq'
+        """
+        for m in self.mirrors:
+            m.p = quat.rotate(dq, m.p)
+            m.q = quat.multiply(dq, m.q)
+        self.q = quat.multiply(dq, self.q)
+        return self.q
+    def set_p(self, p):
+        """Move to new position p.
+        """
+        dp = p-self.p
+        self.move(dp)
+    def set_q(self, q):
+        """Rotate to new attitude q.
+        """
+        dq = quat.multiply(q, quat.conjugate(self.q))
+        self.rotate(dq)
+    def draw(self, nside=32, axes=None, return_only=False, **kwargs):
+        """Draw triangular surface of all mirrors.
+
+        Arguments:
+        nside  - nside of healpix sampling points for each mirror.
+        axes   - matplotlib axes object.
+        return_only - instead of plotting the surface, return the triangles only.
+        kwargs - keyword arguments to pass to plot_trisurf().
+        """
+        trigs = []
+        Zs    = []
+        xmin  = 0.
+        xmax  = 0.
+        ymin  = 0.
+        ymax  = 0.
+        zmin  = 0.
+        zmax  = 0.
+        for m in self.mirrors:
+            trig, Z = m.draw(nside=nside, return_only=True)
+            trigs.append(trig)
+            Zs.append(Z)
+            xmin = min(xmin, trig.x.min())
+            xmax = max(xmax, trig.x.max())
+            ymin = min(ymin, trig.y.min())
+            ymax = max(ymax, trig.y.max())
+            zmin = min(zmin, Z.min())
+            zmax = max(zmax, Z.max())
+        sz = np.max([xmax-xmin, ymax-ymin, zmax-zmin])
+        xc = .5*(xmin+xmax)
+        yc = .5*(ymin+ymax)
+        zc = .5*(zmin+zmax)
+        extent = {'x':(xmin, xmax),
+                  'y':(ymin, ymax),
+                  'z':(zmin, zmax)}
+        if not return_only:
+            if axes is None:
+                fig = plt.figure()
+                axes = fig.add_subplot(111, projection='3d')
+            for i in range(len(self.mirrors)):
+                axes.plot_trisurf(trigs[i], Zs[i], **kwargs)
+            axes.set_xlim(xc-.6*sz, xc+.6*sz)
+            axes.set_ylim(yc-.6*sz, yc+.6*sz)
+            axes.set_zlim(zc-.6*sz, zc+.6*sz)
+            plt.show()
+        return trigs, Zs, extent
+        
+class PhotonCollector(OpticalAssembly):
+    pass
+
+class SIM(OpticalAssembly):
     """Simplified Michelson stellar interferometer model.
 
 1. Overall model
