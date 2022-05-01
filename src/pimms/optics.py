@@ -202,19 +202,22 @@ class SymmetricQuadricMirror(object):
         tp_lt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm>=0.))
         tp_gt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm<0.))
         tp_gt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm>=0.))
-        t[(~a_is_0)&(~d_lt_0)][tp_lt_0_and_tm_lt_0] = np.inf
-        t[(~a_is_0)&(~d_lt_0)][tp_lt_0_and_tm_gt_0] = tm[tp_lt_0_and_tm_gt_0]
-        t[(~a_is_0)&(~d_lt_0)][tp_gt_0_and_tm_lt_0] = tp[tp_gt_0_and_tm_lt_0]
-        t[(~a_is_0)&(~d_lt_0)][tp_gt_0_and_tm_gt_0] = np.min(
+        tpm = np.empty_like(tp)
+        tpm[tp_lt_0_and_tm_lt_0] = np.inf
+        tpm[tp_lt_0_and_tm_gt_0] = tm[tp_lt_0_and_tm_gt_0]
+        tpm[tp_gt_0_and_tm_lt_0] = tp[tp_gt_0_and_tm_lt_0]
+        tpm[tp_gt_0_and_tm_gt_0] = np.min(
             [tp[tp_gt_0_and_tm_gt_0],tm[tp_gt_0_and_tm_gt_0]], axis=0)
+        t[(~a_is_0)&(~d_lt_0)] = tpm[:]
         n = np.empty_like(s)
         t_is_inf = np.isinf(t)
         n[:, t_is_inf] = np.nan
         n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
-        rn = (n[0:~t_is_inf]**2. + n[1:~t_is_inf]**2.)**.5
+        rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
+        print(rn)
         inside = np.logical_and(rn<=(self.d_out*.5), rn>=(self.d_in*.5))
-        t[~t_is_inf][~inside] = np.inf
-        n[:,~t_is_inf][~inside] = np.nan
+        t[~t_is_inf] = np.where(inside, t[~t_is_inf], np.inf)
+        n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
         hit = np.logical_not(np.isinf(t))
         n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
         return n, t
