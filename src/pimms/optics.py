@@ -7,7 +7,7 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
-class LightRay(object):
+class RayTrace(object):
     def __init__(self):
         pass
 class LightBeam(object):
@@ -188,6 +188,7 @@ class SymmetricQuadricMirror(object):
         distance     - distance between the starting point and the intersection, or np.inf if the
                        intersection does not exist.
         """
+        # convert lab coordinates to mirror fixed coordinates.
         s,u = np.broadcast_arrays(
             quat.rotate(quat.conjugate(self.q), np.double(start).reshape((3,-1))-self.p),
             quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))-self.p))
@@ -248,17 +249,21 @@ class SymmetricQuadricMirror(object):
         # case 3.3.2: the first intersection hits the mirror.
         r1 = np.sum((s[:2,(~a_is_0)&(~d_lt_0)][:2,tp_gt_0_and_tm_gt_0]+
                      u[:2,(~a_is_0)&(~d_lt_0)][:2,tp_gt_0_and_tm_gt_0]*t1)**2., axis=0)**.5
+        # merge case 3.3.1 and 3.3.2
         tpm[tp_gt_0_and_tm_gt_0] = np.where((r1<=(self.d_out*.5))&(r1>=(self.d_in*.5)), t1, t2)
+        # merge case 3.1, 3.2 and 3.3
         t[(~a_is_0)&(~d_lt_0)] = tpm[:]
         n = np.empty_like(s)
         t_is_inf = np.isinf(t)
         n[:, t_is_inf] = np.nan
         n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
         rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
+        # double check out-of-boundary intersections.
         inside = np.logical_and(rn<=(self.d_out*.5), rn>=(self.d_in*.5))
         t[~t_is_inf] = np.where(inside, t[~t_is_inf], np.inf)
         n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
         hit = np.logical_not(np.isinf(t))
+        # convert mirror fixed coordinates back to lab coordinates.
         n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
         return n, t
 
