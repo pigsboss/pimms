@@ -7,6 +7,13 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
+class LightRay(object):
+    def __init__(self):
+        pass
+class LightBeam(object):
+    def __init__(self):
+        pass
+
 class SymmetricQuadricMirror(object):
     """Symmetric quadric mirror model.
 
@@ -70,6 +77,7 @@ class SymmetricQuadricMirror(object):
         self.q       = np.double(q).reshape((4,1))
         self.name    = name
         if np.isclose(self.f, 0.):
+            # plane mirror
             self.coef = {
                 'x2':0.,
                 'y2':0.,
@@ -83,6 +91,7 @@ class SymmetricQuadricMirror(object):
                 'c' :0.
             }
         elif np.isclose(self.g, 0.):
+            # parabolic mirror
             self.coef = {
                 'x2':1.,
                 'y2':1.,
@@ -96,6 +105,7 @@ class SymmetricQuadricMirror(object):
                 'c' :-4.*self.f**2.
             }
         else:
+            # hyperbolic mirror
             a = (self.g-self.f)*.5
             c = (self.g+self.f)*.5
             self.coef = {
@@ -119,6 +129,11 @@ class SymmetricQuadricMirror(object):
         axes  - predefined matplotlib axes object.
         return_only - instead of plotting surface, return the triangles only.
         """
+        # healpix sampling points
+        # use 1/12 shpere to sample the surface of the mirror
+        # 1 - cos(theta) = 2*n/N, where theta is the co-latitude,
+        # n is number of pixels (ring scheme) and N is number of all pixels.
+        # n=N/12, so cos(theta)=5/6 and sin(theta)=(11/36)^0.5=0.5527708
         theta_out = np.arcsin(.5527708)
         theta_in  = np.arcsin(.5527708*self.d_in/self.d_out)
         npix_start, npix_stop = hp.ang2pix(nside, [theta_in, theta_out], [0., np.pi*2.])
@@ -133,12 +148,15 @@ class SymmetricQuadricMirror(object):
             b = self.coef['z']
             c = self.coef['x2']*xs**2. + self.coef['y2']*ys**2. + self.coef['c']
             zs = (-b-(b**2.-4.*a*c)**.5)/2./a
+        # triangulation
         tri = mtri.Triangulation(xs, ys)
         xc = xs[tri.triangles].mean(axis=1)
         yc = ys[tri.triangles].mean(axis=1)
         rc = (xc**2.+yc**2.)**.5
-        mask = np.where((rc>rs.max()) | (rc<rs.min()), 1, 0)
+        # mask out triangles out of boundaries (d_out & d_in)
+        mask = np.where((rc>(self.d_out*.5)) | (rc<(self.d_in*.5)), 1, 0)
         tri.set_mask(mask)
+        # convert mirror fixed coordinates to lab coordinate system
         R = quat.rotate(self.q, [xs,ys,zs])
         X = R[0]+self.p[0]
         Y = R[1]+self.p[1]
@@ -158,7 +176,7 @@ class SymmetricQuadricMirror(object):
         return tri, Z
     
     def intersect(self, start, direction):
-        """Find intersection of incident beam and the mirror surface.
+        """Find intersection of incident light ray and the mirror surface.
 
         Arguments:
         start     - starting point vector (lab csys) of the incident beam.
@@ -173,6 +191,16 @@ class SymmetricQuadricMirror(object):
         s,u = np.broadcast_arrays(
             quat.rotate(quat.conjugate(self.q), np.double(start).reshape((3,-1))-self.p),
             quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))-self.p))
+        # solve equations:
+        # x = s[0] + u[0]*t,
+        # y = s[1] + u[1]*t, and
+        # z = s[2] + u[2]*t are linear equations, where t is distance between (x,y,z) and s.
+        # f(x,y,z) = 0 is quadric surface equation.
+        # substitute x, y and z with t in surface equation:
+        # a t^2 + b t + c = 0.
+        # if the equation holds for t>0, it means that the light ray from the starting point s
+        # along direction u intersects with the surface, although not necessarily within the
+        # region bounded by d_out and d_in.
         a = self.coef['x2']*u[0]**2.  + self.coef['y2']*u[1]**2.  + self.coef['z2']*u[2]**2. + \
             self.coef['xy']*u[0]*u[1] + self.coef['xz']*u[0]*u[2] + self.coef['yz']*u[1]*u[2]
         b = 2.*self.coef['x2']*s[0]*u[0] + \
@@ -190,31 +218,43 @@ class SymmetricQuadricMirror(object):
         a_is_0 = np.isclose(a, 0.)
         b_is_0 = np.isclose(b, 0.)
         t = np.zeros_like(s[0])
+        # case 0: the line does not intersect the surface.
         t[  a_is_0  &   b_is_0 ] = np.inf
         minus_c_over_b = -c[a_is_0 & (~b_is_0)]/b[a_is_0 & (~b_is_0)]
+        # case 1: equation f(t)=0 is linear.
         t[  a_is_0  & (~b_is_0)] = np.where(minus_c_over_b>=0., minus_c_over_b, np.inf)
         d = b**2. - 4.*a*c
         d_lt_0 = np.bool_(d<0.)
+        # case 2: equation f(t)=0 is quadric but there is no real root.
         t[(~a_is_0) &   d_lt_0 ] = np.inf
-        tp = (-b[(~a_is_0)&(~d_lt_0)]+d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
-        tm = (-b[(~a_is_0)&(~d_lt_0)]-d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
-        tp_lt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm<0.))
-        tp_lt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm>=0.))
-        tp_gt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm<0.))
-        tp_gt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm>=0.))
+        # case 3: equation f(t)=0 is quadric and there is two real roots.
+        tp  = (-b[(~a_is_0)&(~d_lt_0)]+d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
+        tm  = (-b[(~a_is_0)&(~d_lt_0)]-d[(~a_is_0)&(~d_lt_0)]**.5) / 2. / a[(~a_is_0)&(~d_lt_0)]
         tpm = np.empty_like(tp)
+        # case 3.1: both roots are negative, which means the light ray goes away from the intersections.
+        tp_lt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm<0.))
         tpm[tp_lt_0_and_tm_lt_0] = np.inf
+        # case 3.2: one root is positive and the other one is negative, which means the starting point
+        # lies between the two intersections.
+        tp_lt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp<0.), np.bool_(tm>=0.))
         tpm[tp_lt_0_and_tm_gt_0] = tm[tp_lt_0_and_tm_gt_0]
+        tp_gt_0_and_tm_lt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm<0.))
         tpm[tp_gt_0_and_tm_lt_0] = tp[tp_gt_0_and_tm_lt_0]
-        tpm[tp_gt_0_and_tm_gt_0] = np.min(
-            [tp[tp_gt_0_and_tm_gt_0],tm[tp_gt_0_and_tm_gt_0]], axis=0)
+        # case 3.3: both roots are positive, which means the light ray will intersect the surface twice.
+        tp_gt_0_and_tm_gt_0 = np.logical_and(np.bool_(tp>=0.), np.bool_(tm>=0.))
+        t1 = np.min([tp[tp_gt_0_and_tm_gt_0],tm[tp_gt_0_and_tm_gt_0]], axis=0)
+        t2 = np.max([tp[tp_gt_0_and_tm_gt_0],tm[tp_gt_0_and_tm_gt_0]], axis=0)
+        # case 3.3.1: the first intersection is out of boundaries, which means it misses the mirror.
+        # case 3.3.2: the first intersection hits the mirror.
+        r1 = np.sum((s[:2,(~a_is_0)&(~d_lt_0)][:2,tp_gt_0_and_tm_gt_0]+
+                     u[:2,(~a_is_0)&(~d_lt_0)][:2,tp_gt_0_and_tm_gt_0]*t1)**2., axis=0)**.5
+        tpm[tp_gt_0_and_tm_gt_0] = np.where((r1<=(self.d_out*.5))&(r1>=(self.d_in*.5)), t1, t2)
         t[(~a_is_0)&(~d_lt_0)] = tpm[:]
         n = np.empty_like(s)
         t_is_inf = np.isinf(t)
         n[:, t_is_inf] = np.nan
         n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
         rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
-        print(rn)
         inside = np.logical_and(rn<=(self.d_out*.5), rn>=(self.d_in*.5))
         t[~t_is_inf] = np.where(inside, t[~t_is_inf], np.inf)
         n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
