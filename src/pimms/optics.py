@@ -7,8 +7,39 @@ import healpy as hp
 from pymath.common import norm
 import pymath.quaternion as quat
 
+hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
+
+class LightSource(object):
+    def __init__(self, location=(0., np.pi/2., np.inf), intensity=1e-10, wavelength=5e-7):
+        """Create simple light source model.
+
+        Arguments:
+        location   - location of the light source in lab coordinate system,
+                     (longitude, latitute, distance).
+        intensity  - integral flux at the origin of the lab coordinate system, in W/m2.
+        wavelength - wavelength of the light source, in m.
+        """
+        self.location   = location
+        self.intensity  = intensity
+        self.wavelength = wavelength
+    def __call__(self, list_of_mirrors, num_super_photons):
+        """Shed super photons onto mirrors.
+
+        list_of_mirrors   - list of collecting mirrors
+        num_super_photons - number of super photons
+        
+        A super photon is an atomic envelope of energy emitted from a light source during
+        an indivisible period of time.
+        Properties of a super photon:
+        number of normal photons - a measure of energy encapsulated
+        starting point           - a 3D coordinate in lab csys
+        direction                - a unit vector
+        initial phase            - phase angle at starting point
+        """
+        
+        
 class RayTrace(object):
-    def __init__(self):
+    def __init__(self, source_loc, source_intensity, wavelength):
         pass
 class LightBeam(object):
     def __init__(self):
