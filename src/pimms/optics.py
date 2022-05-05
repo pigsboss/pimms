@@ -10,24 +10,41 @@ import pymath.quaternion as quat
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 
 class LightSource(object):
-    def __init__(self, location=(0., np.pi/2., np.inf), intensity=1e-10, wavelength=5e-7):
+    def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
 
         Arguments:
         location   - location of the light source in lab coordinate system,
-                     (longitude, latitute, distance).
+                     (phi, theta, rho).
+                     phi is the angle between the source vector and x-axis on xOy plane.
+                     theta is the angle between the source vector and z-axis, i.e., co-latitude.
+                     rho is distance between the source and the origin, in meters.
+                     Default: infinity towards +z.
         intensity  - integral flux at the origin of the lab coordinate system, in W/m2.
         wavelength - wavelength of the light source, in m.
         """
-        self.location   = location
+        self.phi,self.theta,self.rho = location
         self.intensity  = intensity
         self.wavelength = wavelength
-    def __call__(self, list_of_mirrors, num_super_photons):
+        self.energy     = hc / self.wavelength
+        self.direction  = np.double(quat.ptr2xyz(self.phi, self.theta, 1.)) # unit vector from the origin to the source
+    def __call__(self, list_of_apertures, num_super_photons, dt):
         """Shed super photons onto mirrors.
 
-        list_of_mirrors   - list of collecting mirrors
-        num_super_photons - number of super photons
-        
+        list_of_apertures - list of apertures of optical system
+        num_super_photons - number of super photons per aperture
+        dt                - atomic time duration, in second
+
+        An aperture is the hole next to the object glass of the telescope, through which
+        the light and image of the object comes into the tube and thence it is carried to
+        the eye. (1707, Glossographia Anglicana Nove.)
+
+        To trace light rays from the light source end to the detector end of the optical
+        system a virtual aperture is placed in front (the object side) of the primary
+        mirror of each photon collecting telescope. Such a virtual aperture is implemented
+        with a virtual plane mirror with necessary properties such as attitude quaternion,
+        position and outside diameter.
+
         A super photon is an atomic envelope of energy emitted from a light source during
         an indivisible period of time.
         Properties of a super photon:
@@ -36,8 +53,36 @@ class LightSource(object):
         direction                - a unit vector
         initial phase            - phase angle at starting point
         """
-        
-        
+        if np.isinf(self.rho):
+            # plane wave
+            op = [] # length of optical path from the equi-phase plane to the nearest point on the aperture
+            area   = 0. # total area of exit pupil
+            for aperture in list_of_apertures:
+                norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
+                sin_alpha = quat.norm(np.cross(self.direction, norm_aperture, axis=0))
+                # displacement from the center of the aperture to the equi-phase plane passing the origin, i.e.,
+                # (x,y,z) dot self.direction = 0, along the direction towards the source.
+                t = -aperture.p[0]*self.direction[0]-aperture.p[1]*self.direction[1]-aperture.p[2]*self.direction[2]
+                op.append(t-aperture.d_out*sin_alpha*.5)
+                area += np.pi*(aperture.d_out**2.-aperture.d_in**2.)/4.*sin_alpha
+            opm = np.min(op)
+            starts = []
+            for aperture in list_of_apertures:
+                rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+aperture.d_in**2.)**.5)
+                phi = 2.*np.pi*np.random.rand(num_super_photons)
+                # samplings of aperture in lab coordinates
+                r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
+                t = opm - (r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])
+                starts.append(r+self.direction*t)
+            u = np.concatenate(starts, axis=1)
+            return {'num_photons':self.intensity*dt*area/self.energy/u.shape[1],
+                    'starting':u,
+                    'direction':-self.direction,
+                    'phase_init':0.}
+        else:
+            # spherical wave
+            pass
+            
 class RayTrace(object):
     def __init__(self, source_loc, source_intensity, wavelength):
         pass
