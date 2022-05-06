@@ -110,7 +110,7 @@ class LightSource(object):
                     rho = R*((1.-(1.-np.cos(beta))*np.random.rand(num_super_photons))**-2. - 1.)**.5
                     phi = 2.*np.pi*np.random.rand(num_super_photons)
                     sp_pos.append(quat.rotate(
-                        quat.from_angles(*(quat.xyz2ptr(aperture.p - p)[:2])),
+                        quat.from_angles(*(quat.xyz2ptr(aperture.p[0]-p[0], aperture.p[1]-p[1], aperture.p[2]-p[2])[:2])),
                         [R, rho*np.cos(phi), rho*np.sin(phi)]))
                     area += 2.*np.pi*(1.-np.cos(beta))*(self.rho**2.)
                 u = np.concatenate(sp_pos, axis=1)
@@ -122,8 +122,10 @@ class LightSource(object):
             else:
                 superphotons = np.zeros((num_super_photons,), dtype=sptype)
                 superphotons['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
+                theta = np.arccos(1.-2.*np.random.rand(num_super_photons))
+                phi   = 2.*np.pi*np.random.rand(num_super_photons)
                 superphotons['position']  = p
-                superphotons['direction'] = quat.direction(u).transpose()
+                superphotons['direction'] = np.double(np.ptr2xyz([phi, np.pi/2.-theta, 1.])).transpose()
                 superphotons['phase']     = 0.
         return superphotons
             
