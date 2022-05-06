@@ -9,6 +9,12 @@ import pymath.quaternion as quat
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 
+# super photon properties data type:
+sptype = np.dtype([
+    ('weight',    'f4'),
+    ('position',  'f8', 3),
+    ('direction', 'f8', 3),
+    ('phase',     'f8')])
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -27,7 +33,7 @@ class LightSource(object):
         self.intensity  = intensity
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
-        self.direction  = np.double(quat.ptr2xyz(self.phi, self.theta, 1.)) # unit vector from the origin to the source
+        self.direction  = np.double([np.sin(self.theta)*np.cos(self.phi), np.sin(self.theta)*np.sin(self.phi), np.cos(self.theta)]) # unit vector from the origin to the source
     def __call__(self, list_of_apertures, num_super_photons, dt):
         """Shed super photons onto mirrors.
 
@@ -48,10 +54,10 @@ class LightSource(object):
         A super photon is an atomic envelope of energy emitted from a light source during
         an indivisible period of time.
         Properties of a super photon:
-        number of normal photons - a measure of energy encapsulated
-        starting point           - a 3D coordinate in lab csys
-        direction                - a unit vector
-        initial phase            - phase angle at starting point
+        weight    - a measure of energy encapsulated
+        position  - a 3D coordinate in lab csys
+        direction - a unit vector
+        phase     - phase angle at starting point
         """
         if np.isinf(self.rho):
             # plane wave
@@ -59,7 +65,7 @@ class LightSource(object):
             area   = 0. # total area of exit pupil
             for aperture in list_of_apertures:
                 norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
-                sin_alpha = quat.norm(np.cross(self.direction, norm_aperture, axis=0))
+                sin_alpha = np.linalg.norm(np.cross(self.direction, norm_aperture, axis=0))
                 # displacement from the center of the aperture to the equi-phase plane passing the origin, i.e.,
                 # (x,y,z) dot self.direction = 0, along the direction towards the source.
                 t = -aperture.p[0]*self.direction[0]-aperture.p[1]*self.direction[1]-aperture.p[2]*self.direction[2]
@@ -72,16 +78,54 @@ class LightSource(object):
                 phi = 2.*np.pi*np.random.rand(num_super_photons)
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
-                t = opm - (r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])
-                starts.append(r+self.direction*t)
+                t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
+                starts.append(np.double([
+                    r[0]+self.direction[0]*t,
+                    r[1]+self.direction[1]*t,
+                    r[2]+self.direction[2]*t]))
             u = np.concatenate(starts, axis=1)
-            return {'num_photons':self.intensity*dt*area/self.energy/u.shape[1],
-                    'starting':u,
-                    'direction':-self.direction,
-                    'phase_init':0.}
+            superphotons = np.zeros((u.shape[1],), dtype=sptype)
+            superphotons['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
+            superphotons['position']  = u.transpose()
+            superphotons['direction'] = -self.direction
+            superphotons['phase']     = 0.
         else:
             # spherical wave
-            pass
+            p = quat.ptr2xyz(self.phi, np.pi/2.-self.theta, self.rho)
+            far_field = True
+            for aperture in list_of_apertures:
+                far_field = far_field & (np.linalg.norm(p - aperture.p) > aperture.d_out*.5)
+            if far_field:
+                sp_pos = []
+                area = 0.
+                for aperture in list_of_apertures:
+                    R = np.linalg.norm(p - aperture.p)
+                    r = aperture.d_out*.5
+                    norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
+                    sin_alpha = np.linalg.norm(np.cross(self.direction, norm_aperture, axis=0))
+                    if sin_alpha >= (r/R):
+                        beta = np.arccos(((R**2.-r**2.)**.5) / R)
+                    else:
+                        beta = np.arccos((R-r*sin_alpha) / (R**2.+r**2.-2.*R*r*sin_alpha)**.5)
+                    rho = R*((1.-(1.-np.cos(beta))*np.random.rand(num_super_photons))**-2. - 1.)**.5
+                    phi = 2.*np.pi*np.random.rand(num_super_photons)
+                    sp_pos.append(quat.rotate(
+                        quat.from_angles(*(quat.xyz2ptr(aperture.p - p)[:2])),
+                        [R, rho*np.cos(phi), rho*np.sin(phi)]))
+                    area += 2.*np.pi*(1.-np.cos(beta))*(self.rho**2.)
+                u = np.concatenate(sp_pos, axis=1)
+                superphotons = np.zeros((u.shape[1],), dtype=sptype)
+                superphotons['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
+                superphotons['position']  = p
+                superphotons['direction'] = quat.direction(u).transpose()
+                superphotons['phase']     = 0.
+            else:
+                superphotons = np.zeros((num_super_photons,), dtype=sptype)
+                superphotons['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
+                superphotons['position']  = p
+                superphotons['direction'] = quat.direction(u).transpose()
+                superphotons['phase']     = 0.
+        return superphotons
             
 class RayTrace(object):
     def __init__(self, source_loc, source_intensity, wavelength):
