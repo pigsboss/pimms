@@ -58,7 +58,14 @@ class LightSource(object):
         position  - a 3D coordinate in lab csys
         direction - a unit vector
         phase     - phase angle at starting point
+
+        Returns:
+        sp_start  - super photons passing through an equi-phase surface between the exit pupil
+                    of the light source and the apertures.
+        sp_stop   - super photons arriving at the apertures
         """
+        #
+        # find super photons at equi-phase surface sq_start.
         if np.isinf(self.rho):
             # plane wave
             op = [] # length of optical path from the equi-phase plane to the nearest point on the aperture
@@ -71,35 +78,36 @@ class LightSource(object):
                 t = -aperture.p[0]*self.direction[0]-aperture.p[1]*self.direction[1]-aperture.p[2]*self.direction[2]
                 op.append(t-aperture.d_out*sin_alpha*.5)
                 area += np.pi*(aperture.d_out**2.-aperture.d_in**2.)/4.*sin_alpha
-            opm = np.min(op)
-            starts = []
+            opm = np.min(op) # minimum optical path
+            u = []
             for aperture in list_of_apertures:
-                rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+aperture.d_in**2.)**.5)
+                rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+
+                           aperture.d_in**2.)**.5)
                 phi = 2.*np.pi*np.random.rand(num_super_photons)
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
                 t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
-                starts.append(np.double([
+                s = np.double([
                     r[0]+self.direction[0]*t,
                     r[1]+self.direction[1]*t,
-                    r[2]+self.direction[2]*t]))
-            u = np.concatenate(starts, axis=1)
-            superphotons = np.zeros((u.shape[1],), dtype=sptype)
-            superphotons['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
-            superphotons['position']  = u.transpose()
-            superphotons['direction'] = -self.direction
-            superphotons['phase']     = 0.
+                    r[2]+self.direction[2]*t])
+                u.append(s)
+            u = np.concatenate(u, axis=1)
+            sp_start = np.zeros((u.shape[1],), dtype=sptype)
+            sp_start['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
+            sp_start['position']  = u.transpose()
+            sp_start['direction'] = -self.direction
         else:
             # spherical wave
-            p = quat.ptr2xyz(self.phi, np.pi/2.-self.theta, self.rho)
+            p = np.reshape(quat.ptr2xyz(self.phi, np.pi/2.-self.theta, self.rho), (3,))
             far_field = True
             for aperture in list_of_apertures:
-                far_field = far_field & (np.linalg.norm(p - aperture.p) > aperture.d_out*.5)
+                far_field = far_field & (np.linalg.norm(p - aperture.p.ravel()) > aperture.d_out*.5)
             if far_field:
-                sp_pos = []
+                u = []
                 area = 0.
                 for aperture in list_of_apertures:
-                    R = np.linalg.norm(p - aperture.p)
+                    R = np.linalg.norm(p - aperture.p.ravel())
                     r = aperture.d_out*.5
                     norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
                     sin_alpha = np.linalg.norm(np.cross(self.direction, norm_aperture, axis=0))
@@ -109,25 +117,40 @@ class LightSource(object):
                         beta = np.arccos((R-r*sin_alpha) / (R**2.+r**2.-2.*R*r*sin_alpha)**.5)
                     rho = R*((1.-(1.-np.cos(beta))*np.random.rand(num_super_photons))**-2. - 1.)**.5
                     phi = 2.*np.pi*np.random.rand(num_super_photons)
-                    sp_pos.append(quat.rotate(
-                        quat.from_angles(*(quat.xyz2ptr(aperture.p[0]-p[0], aperture.p[1]-p[1], aperture.p[2]-p[2])[:2])),
-                        [R, rho*np.cos(phi), rho*np.sin(phi)]))
+                    s = quat.rotate(quat.from_angles(*(quat.xyz2ptr(
+                        aperture.p[0]-p[0],
+                        aperture.p[1]-p[1],
+                        aperture.p[2]-p[2])[:2])),[R, rho*np.cos(phi), rho*np.sin(phi)])
+                    u.append(s)
                     area += 2.*np.pi*(1.-np.cos(beta))*(self.rho**2.)
-                u = np.concatenate(sp_pos, axis=1)
-                superphotons = np.zeros((u.shape[1],), dtype=sptype)
-                superphotons['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
-                superphotons['position']  = p
-                superphotons['direction'] = quat.direction(u).transpose()
-                superphotons['phase']     = 0.
+                u = np.concatenate(u, axis=1)
+                sp_start = np.zeros((u.shape[1],), dtype=sptype)
+                sp_start['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
+                sp_start['direction'] = quat.direction(u).transpose()
             else:
-                superphotons = np.zeros((num_super_photons,), dtype=sptype)
-                superphotons['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
                 theta = np.arccos(1.-2.*np.random.rand(num_super_photons))
                 phi   = 2.*np.pi*np.random.rand(num_super_photons)
-                superphotons['position']  = p
-                superphotons['direction'] = np.double(np.ptr2xyz([phi, np.pi/2.-theta, 1.])).transpose()
-                superphotons['phase']     = 0.
-        return superphotons
+                sp_start = np.zeros((num_super_photons,), dtype=sptype)
+                sp_start['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
+                sp_start['direction'] = np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
+            sp_start['position'] = p
+        sp_start['phase'] = 0.
+        #
+        # find super photons at aperture sp_stop.
+        sp_stop = np.empty_like(sp_start)
+        sp_stop['weight'][:]    = sp_start['weight']
+        sp_stop['position'][:]  = np.nan
+        sp_stop['direction'][:] = sp_start['direction']
+        sp_dist = np.empty((sp_start.size, ))
+        sp_dist[:] = np.inf
+        for aperture in list_of_apertures:
+            n, t = aperture.intersect(sp_start['position'].transpose(), sp_start['direction'].transpose())
+            sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), n.transpose(), sp_stop['position'])
+            sp_dist = np.where(t<sp_dist, t, sp_dist)
+        miss_all = np.isinf(sp_dist)
+        sp_stop['phase'][ miss_all] = np.nan
+        sp_stop['phase'][~miss_all] = 2.*np.pi*np.mod(sp_dist[~miss_all], self.wavelength)/self.wavelength
+        return sp_start[~miss_all], sp_stop[~miss_all]
             
 class RayTrace(object):
     def __init__(self, source_loc, source_intensity, wavelength):
@@ -174,13 +197,17 @@ class SymmetricQuadricMirror(object):
     f     - focal length, distance between mirror center and focus on the same side
     g     - focal length, distance between mirror center and focus on the other side
     """
-    def __init__(self, d_in, d_out, r=(1., 1.), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
+    def __init__(self, d_in, d_out, r=(1, 1), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
         """Construct symmetric quadric mirror object.
 
         Arguments:
         d_in  - inside diameter.
         d_out - outside diameter.
-        r     - reflectance, in (z+, z-), i.e., reflectance of top and bottom surface of the mirror.
+        r     - boundary type in (top, bottom) of top (towards the focus, or +z direction) and
+                bottom (away from the focus, or -z direction) surface of the mirror:
+                +1 - fully reflection;
+                 0 - fully absorption;
+                -1 - fully transmission.
         f     - focal length, for parabolic and hyperbolic mirrors.
         g     - distance to the other focus, for hyperbolic mirror only.
         p     - position in lab coordinate system.
@@ -313,7 +340,7 @@ class SymmetricQuadricMirror(object):
         # convert lab coordinates to mirror fixed coordinates.
         s,u = np.broadcast_arrays(
             quat.rotate(quat.conjugate(self.q), np.double(start).reshape((3,-1))-self.p),
-            quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))-self.p))
+            quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))))
         # solve equations:
         # x = s[0] + u[0]*t,
         # y = s[1] + u[1]*t, and
@@ -388,6 +415,38 @@ class SymmetricQuadricMirror(object):
         # convert mirror fixed coordinates back to lab coordinates.
         n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
         return n, t
+
+    def normal(self, r):
+        """Normal vector at position r of the surface.
+        A normal vector is a unit vector from given position at the surface towards the focus,
+        i.e., along +z direction and perpendicular to the tangential plane of the surface.
+
+        Argument:
+        r   - coordinate in lab csys.
+
+        Return:
+        n   - unit normal vector in lab csys.
+        """
+
+        # convert r to mirror fixed coordinates
+        r = quat.rotate(quat.conjugate(self.q), r-self.p)
+        n = np.double([
+            self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
+            self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
+            self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
+        if self.f>0.:
+            n = np.where(np.sum(n*r, axis=0)>0., n, -n)
+        else:
+            n = np.where(n[2]>0., n, -n)
+        # convert n to lab csys
+        n = quat.rotate(self.q, n)
+        return n
+    
+    def encounter(self, photon_in, intersection):
+        """Outcomes when a super photon encounters with the mirror.
+        """
+        
+        return photon_out
 
 class OpticalAssembly(object):
     """Assembly of optical parts.
