@@ -200,13 +200,25 @@ class SymmetricQuadricMirror(object):
     f     - focal length, distance between mirror center and focus on the same side
     g     - focal length, distance between mirror center and focus on the other side
     """
-    def __init__(self, d_in, d_out, r=(1, 1), f=0., g=0., p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
+    def __init__(
+            self,
+            d_in,
+            d_out,
+            b=(1, 1),
+            f=0.,
+            g=0.,
+            p=[0., 0., 0.],
+            q=[1., 0., 0., 0.],
+            name='',
+            is_primary=False,
+            is_virtual=False
+    ):
         """Construct symmetric quadric mirror object.
 
         Arguments:
         d_in  - inside diameter.
         d_out - outside diameter.
-        r     - boundary type in (top, bottom) of top (towards the focus, or +z direction) and
+        b     - boundary type in (top, bottom) of top (towards the focus, or +z direction) and
                 bottom (away from the focus, or -z direction) surface of the mirror:
                 +1 - fully reflection;
                  0 - fully absorption;
@@ -219,15 +231,18 @@ class SymmetricQuadricMirror(object):
                 where r is coordinate of mirror's fixed csys, r' is coordinate of lab csys,
                 p is position of the mirror in lab csys and q is the attitude quaternion.
         name  - human readable name assigned to the mirror.
+        is_primary and is_virtual are reserved switches for OpticalAssembly object.
         """
         self.d_in     = d_in
         self.d_out    = d_out
-        self.boundary = r
+        self.boundary = b
         self.f        = f
         self.g        = g
         self.p        = np.double(p).reshape((3,1))
         self.q        = np.double(q).reshape((4,1))
         self.name     = name
+        self.is_primary = is_primary
+        self.is_virtual = is_virtual
         if np.isclose(self.f, 0.):
             # plane mirror
             self.coef = {
@@ -543,7 +558,7 @@ class OpticalAssembly(object):
         """
         dq = quat.multiply(q, quat.conjugate(self.q))
         self.rotate(dq)
-    def draw(self, nside=32, axes=None, return_only=False, **kwargs):
+    def draw(self, nside=32, axes=None, return_only=False, draw_virtual=False, highlight_primary=True, **kwargs):
         """Draw triangular surface of all mirrors.
 
         Arguments:
@@ -583,7 +598,15 @@ class OpticalAssembly(object):
                 fig = plt.figure()
                 axes = fig.add_subplot(111, projection='3d')
             for i in range(len(self.mirrors)):
-                axes.plot_trisurf(trigs[i], Zs[i], **kwargs)
+                if self.mirrors[i].is_virtual:
+                    if draw_virtual:
+                        axes.plot_trisurf(trigs[i], Zs[i], alpha=.5, color='Grey', **kwargs)
+                    continue
+                if highlight_primary:
+                    if self.mirrors[i].is_primary:
+                        axes.plot_trisurf(trigs[i], Zs[i], alpha=1., color='Red', **kwargs)
+                        continue
+                axes.plot_trisurf(trigs[i], Zs[i], alpha=.8, color='Blue', **kwargs)
             axes.set_xlim(xc-.6*sz, xc+.6*sz)
             axes.set_ylim(yc-.6*sz, yc+.6*sz)
             axes.set_zlim(zc-.6*sz, zc+.6*sz)
