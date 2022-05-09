@@ -145,7 +145,7 @@ class LightSource(object):
         sp_dist = np.empty((sp_start.size, ))
         sp_dist[:] = np.inf
         for aperture in list_of_apertures:
-            n, t = aperture.intersect(sp_start['position'].transpose(), sp_start['direction'].transpose())
+            n, t = aperture.intersect(sp_start)
             sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), n.transpose(), sp_stop['position'])
             sp_dist = np.where(t<sp_dist, t, sp_dist)
         miss_all = np.isinf(sp_dist)
@@ -342,12 +342,11 @@ class SymmetricQuadricMirror(object):
             plt.show()
         return tri, Z
     
-    def intersect(self, start, direction):
+    def intersect(self, photon_in):
         """Find intersection of incident light ray and the mirror surface.
 
         Arguments:
-        start     - starting point vector (lab csys) of the incident beam.
-        direction - direction unit vector (lab csys) of the incident beam.
+        photon_in - incident photons
 
         Returns:
         intersection - coordinate of the intersection, or (np.nan, np.nan, np.nan) if the intersection
@@ -357,8 +356,8 @@ class SymmetricQuadricMirror(object):
         """
         # convert lab coordinates to mirror fixed coordinates.
         s,u = np.broadcast_arrays(
-            quat.rotate(quat.conjugate(self.q), np.double(start).reshape((3,-1))-self.p),
-            quat.rotate(quat.conjugate(self.q), np.double(direction).reshape((3,-1))))
+            quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p),
+            quat.rotate(quat.conjugate(self.q), photon_in['direction'].transpose()))
         # solve equations:
         # x = s[0] + u[0]*t,
         # y = s[1] + u[1]*t, and
@@ -527,8 +526,10 @@ class OpticalAssembly(object):
         self.q = q
         self.mirrors = []
         self.name = name
+        
     def add_mirror(self, mirror):
         self.mirrors.append(mirror)
+        
     def move(self, dp):
         """Move assembly in lab csys by displacement vector dp.
 
@@ -538,6 +539,7 @@ class OpticalAssembly(object):
             m.p = m.p + dp
         self.p = self.p + dp
         return self.p
+    
     def rotate(self, dq):
         """Rotate assembly around its fixed csys origin by dq.
 
@@ -548,16 +550,19 @@ class OpticalAssembly(object):
             m.q = quat.multiply(dq, m.q)
         self.q = quat.multiply(dq, self.q)
         return self.q
+    
     def set_p(self, p):
         """Move to new position p.
         """
         dp = p-self.p
         self.move(dp)
+        
     def set_q(self, q):
         """Rotate to new attitude q.
         """
         dq = quat.multiply(q, quat.conjugate(self.q))
         self.rotate(dq)
+        
     def draw(self, nside=32, axes=None, return_only=False, draw_virtual=False, highlight_primary=True, **kwargs):
         """Draw triangular surface of all mirrors.
 
@@ -612,8 +617,24 @@ class OpticalAssembly(object):
             axes.set_zlim(zc-.6*sz, zc+.6*sz)
             plt.show()
         return trigs, Zs, extent
-    def intersect(self):
-        pass
+    
+    def intersect(self, photon_in):
+        """Find intersections of incident light rays and the mirrors.
+
+        Arguments:
+        photon_in - incident super photons.
+
+        Returns:
+        n - intersections, in lab csys.
+        t - optical path lengths between starting points and intersections.
+        k - indices of mirror encounted with.
+        """
+        n = np.empty((3, photon_in.size))
+        n[:] = np.nan
+        t = np.empty((photon_in.size, ))
+        t[:] = np.inf
+        
+        return n, t, k
         
 class PhotonCollector(OpticalAssembly):
     pass
