@@ -11,10 +11,11 @@ hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 
 # super photon properties data type:
 sptype = np.dtype([
-    ('weight',    'f4'),
-    ('position',  'f8', 3),
-    ('direction', 'f8', 3),
-    ('phase',     'f8')])
+    ('weight',     'f4'),
+    ('position',   'f8', 3),
+    ('direction',  'f8', 3),
+    ('wavelength', 'f8'),
+    ('phase',      'f8')])
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -150,6 +151,8 @@ class LightSource(object):
         miss_all = np.isinf(sp_dist)
         sp_stop['phase'][ miss_all] = np.nan
         sp_stop['phase'][~miss_all] = 2.*np.pi*np.mod(sp_dist[~miss_all], self.wavelength)/self.wavelength
+        sp_start['wavelength'][:] = self.wavelength
+        sp_stop['wavelength'][:] = self.wavelength
         return sp_start[~miss_all], sp_stop[~miss_all]
             
 class RayTrace(object):
@@ -217,14 +220,14 @@ class SymmetricQuadricMirror(object):
                 p is position of the mirror in lab csys and q is the attitude quaternion.
         name  - human readable name assigned to the mirror.
         """
-        self.d_in    = d_in
-        self.d_out   = d_out
-        self.reflect = r
-        self.f       = f
-        self.g       = g
-        self.p       = np.double(p).reshape((3,1))
-        self.q       = np.double(q).reshape((4,1))
-        self.name    = name
+        self.d_in     = d_in
+        self.d_out    = d_out
+        self.boundary = r
+        self.f        = f
+        self.g        = g
+        self.p        = np.double(p).reshape((3,1))
+        self.q        = np.double(q).reshape((4,1))
+        self.name     = name
         if np.isclose(self.f, 0.):
             # plane mirror
             self.coef = {
@@ -443,9 +446,51 @@ class SymmetricQuadricMirror(object):
         return n
     
     def encounter(self, photon_in, intersection):
-        """Outcomes when a super photon encounters with the mirror.
+        """Determine outcomes when a super photon encounters with the mirror.
+
+        Outcomes:
+        reflected photon   - same weight as incident photon
+                             position at intersection
+                             mirrored direction
+                             phase determined from optical path lenght
+        absorbed photon    - same weight as incident photon
+                             position at intersection
+                             zeroed direction
+                             phase determined from optical path length
+        transmitted photon - same weight as incident photon
+                             position at intersection
+                             same direction as incident photon
+                             phase determined from optical path length
+
+        Arguments:
+        photon_in    - incident super photons, with position and direction vectors in lab csys.
+        intersection - corresponding intersections in lab csys.
+
+        Return:
+        photon_out   - outcome super photons, with position and direction vectors in lab csys.
         """
-        
+        photon_out = np.empty_like(photon_in)
+        n = self.normal(intersection)        # normal vector in lab csys
+        phi_n, theta_n, _ = quat.xyz2ptr(*n) # longtitude and latitude of normal vector in lab csys
+        # attitude Euler's angles
+        phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
+        theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
+        q = quat.from_angles(phi_a, theta_a)
+        photon_out['weight'][:]    = photon_in['weight']
+        photon_out['position'][:]  = intersection.transpose()
+        p = np.transpose(photon_out['position'] - photon_in['position'])
+        u = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
+        d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
+        top_mask = np.double([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
+        bot_mask = np.double([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
+        v = u.transpose()*np.where(d>0., top_mask, bot_mask)
+        photon_out['direction'][:] = quat.rotate(
+            q, v.transpose()
+        ).transpose()
+        photon_out['phase'][:] = photon_in['phase'] + \
+            2.*np.pi*np.mod(
+                np.sum(p.transpose()**2., axis=1)**.5,
+                photon_in['wavelength'])/photon_in['wavelength']
         return photon_out
 
 class OpticalAssembly(object):
@@ -544,6 +589,8 @@ class OpticalAssembly(object):
             axes.set_zlim(zc-.6*sz, zc+.6*sz)
             plt.show()
         return trigs, Zs, extent
+    def intersect(self):
+        pass
         
 class PhotonCollector(OpticalAssembly):
     pass
