@@ -210,8 +210,8 @@ class SymmetricQuadricMirror(object):
             d_in,
             d_out,
             b=(1, 1),
-            f=0.,
-            g=0.,
+            f=np.inf,
+            g=np.inf,
             p=[0., 0., 0.],
             q=[1., 0., 0., 0.],
             name='',
@@ -262,7 +262,7 @@ class SymmetricQuadricMirror(object):
                 'z' :1.,
                 'c' :0.
             }
-        elif np.isinfo(self.g):
+        elif np.isinf(self.g):
             # parabolic mirror
             self.coef = {
                 'x2':1.,
@@ -681,7 +681,7 @@ class OpticalAssembly(object):
             n,t,k = self.intersect(photon_trace[i,:])
             m = np.isinf(t)
             photon_trace[i+1, m] = photon_trace[i,m]
-            hits = np.bincount(k[~m])
+            hits = np.bincount(k[~m],minlength=len(self.mirrors))
             for l in range(len(self.mirrors)):
                 if hits[l]>0:
                     m = np.bool_(k==l)
