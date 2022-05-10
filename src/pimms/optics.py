@@ -155,13 +155,6 @@ class LightSource(object):
         sp_stop['wavelength'][:] = self.wavelength
         return sp_start[~miss_all], sp_stop[~miss_all]
             
-class RayTrace(object):
-    def __init__(self, source_loc, source_intensity, wavelength):
-        pass
-class LightBeam(object):
-    def __init__(self):
-        pass
-
 class SymmetricQuadricMirror(object):
     """Symmetric quadric mirror model.
 
@@ -173,9 +166,9 @@ class SymmetricQuadricMirror(object):
     Parameters:
     d_in  - inside diameter
     d_out - outside diameter
-    r     - reflectance, in (z+, z-)
-    f=0
-    g=0
+    b     - reflectance, in (z+, z-)
+    f     - np.inf
+    g     - np.inf
     
     2. Parabolic mirror
     focus of mirror is at origin.
@@ -184,21 +177,33 @@ class SymmetricQuadricMirror(object):
     Parameters:
     d_in  - inside diameter
     d_out - outside diameter
-    r     - reflectance, in (z+, z-)
+    b     - boundary type, in (z+, z-)
     f     - focal length
-    g=0
+    g     - np.inf
     
     3. Hyperbolic mirror
     focus on the same side is at origin.
     mirror opens upward (+z direction).
     Equation: f(x,y,z) = x^2 + y^2 + (a^2-c^2)/a^2 z^2 + 2(a^2-c^2)c/a^2 z - (a^2-c^2)^2/a^2 = 0,
-    where a = (g-f)/2 and c = (g+f)/2.
+    where a = (f+g)/2 and c = (f-g)/2.
     Parameters:
     d_in  - inside diameter
     d_out - outside diameter
-    r     - reflectance, in (z+, z-)
-    f     - focal length, distance between mirror center and focus on the same side
-    g     - focal length, distance between mirror center and focus on the other side
+    b     - boundary type, in (z+, z-)
+    f     - focal length, displacement from mirror center to the focus of the same side, f>0.
+    g     - focal length, displacement from mirror center to the focus of the other side, g<0.
+
+    4. Elliptical mirror
+    the near focus is at origin.
+    mirror opens upward (+z direction).
+    Equation: f(x,y,z) = x^2 + y^2 + (a^2-c^2)/a^2 z^2 + 2(a^2-c^2)c/a^2 z - (a^2-c^2)^2/a^2 = 0,
+    where a = (f+g)/2 and c = (f-g)/2.
+    Parameters:
+    d_in  - inside diameter
+    d_out - outside diameter
+    b     - boundary type, in (z+, z-)
+    f     - focal length, displacement from mirror center to the near focus, f>0.
+    g     - focal length, displacement from mirror center to the far focus, g>f>0.
     """
     def __init__(
             self,
@@ -243,7 +248,7 @@ class SymmetricQuadricMirror(object):
         self.name     = name
         self.is_primary = is_primary
         self.is_virtual = is_virtual
-        if np.isclose(self.f, 0.):
+        if np.isinf(self.f):
             # plane mirror
             self.coef = {
                 'x2':0.,
@@ -257,7 +262,7 @@ class SymmetricQuadricMirror(object):
                 'z' :1.,
                 'c' :0.
             }
-        elif np.isclose(self.g, 0.):
+        elif np.isinfo(self.g):
             # parabolic mirror
             self.coef = {
                 'x2':1.,
@@ -271,10 +276,26 @@ class SymmetricQuadricMirror(object):
                 'z' :-4.*self.f,
                 'c' :-4.*self.f**2.
             }
-        else:
+        elif self.g<0.:
             # hyperbolic mirror
-            a = (self.g-self.f)*.5
-            c = (self.g+self.f)*.5
+            a = (self.f+self.g)*.5
+            c = (self.f-self.g)*.5
+            self.coef = {
+                'x2':1.,
+                'y2':1.,
+                'z2':(a**2.-c**2.)/a**2.,
+                'xy':0.,
+                'xz':0.,
+                'yz':0.,
+                'x' :0.,
+                'y' :0.,
+                'z' :2.*(a**2.-c**2.)*c/a**2.,
+                'c' :-(a**2.-c**2.)**2./a**2.
+            }
+        elif self.g>0.:
+            # elliptical mirror
+            a = (self.f+self.g)*.5
+            c = (self.f-self.g)*.5
             self.coef = {
                 'x2':1.,
                 'y2':1.,
@@ -306,7 +327,7 @@ class SymmetricQuadricMirror(object):
         npix_start, npix_stop = hp.ang2pix(nside, [theta_in, theta_out], [0., np.pi*2.])
         xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_start, npix_stop)))*self.d_out
         rs = (xs**2.+ys**2.)**.5
-        if np.isclose(self.f, 0.):
+        if np.isinf(self.f):
             zs = np.zeros_like(xs)
         elif np.isclose(self.g, 0.):
             zs = -(self.coef['x2']*xs**2. + self.coef['y2']*ys**2. + self.coef['c']) / self.coef['z']
@@ -451,10 +472,10 @@ class SymmetricQuadricMirror(object):
             self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
             self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
             self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
-        if self.f>0.:
-            n = np.where(np.sum(n*r, axis=0)>0., n, -n)
-        else:
+        if np.isinf(self.f):
             n = np.where(n[2]>0., n, -n)
+        else:
+            n = np.where(np.sum(n*r, axis=0)>0., n, -n)
         # convert n to lab csys
         n = quat.rotate(self.q, n)
         return n
@@ -629,12 +650,44 @@ class OpticalAssembly(object):
         t - optical path lengths between starting points and intersections.
         k - indices of mirror encounted with.
         """
-        n = np.empty((3, photon_in.size))
+        n = np.empty((3, photon_in.size), dtype='double')
+        t = np.empty((photon_in.size, ), dtype='double')
+        k = np.empty((photon_in.size, ), dtype='int16')
         n[:] = np.nan
-        t = np.empty((photon_in.size, ))
         t[:] = np.inf
-        
+        k[:] = -1
+        for i in range(len(self.mirrors)):
+            if not self.mirrors[i].is_virtual:
+                ni, ti = self.mirrors[i].intersect(photon_in)
+                m = np.bool_(ti<t)
+                n[:] = np.where(m, ni, n)
+                t[:] = np.where(m, ti, t)
+                k[:] = np.where(m,  i, k)
         return n, t, k
+
+    def trace(self, photon_in, steps=1):
+        """Trace photons in optical assembly.
+
+        Arguments:
+        photon_in  - input photons
+        steps      - number of ray-tracing steps
+
+        Returns:
+        photon_trace - photon trace at each step
+        """
+        photon_trace = np.empty((steps+1, photon_in.size), dtype=sptype)
+        photon_trace[0,:] = photon_in[:]
+        for i in range(steps):
+            n,t,k = self.intersect(photon_trace[i,:])
+            m = np.isinf(t)
+            photon_trace[i+1, m] = photon_trace[i,m]
+            hits = np.bincount(k[~m])
+            for l in range(len(self.mirrors)):
+                if hits[l]>0:
+                    m = np.bool_(k==l)
+                    photon_trace[i+1, m] = self.mirrors[l].encounter(photon_trace[i, m], n[:, m])
+        return photon_trace
+        
         
 class PhotonCollector(OpticalAssembly):
     pass
