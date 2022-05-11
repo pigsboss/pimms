@@ -323,13 +323,12 @@ class SymmetricQuadricMirror(object):
         # n is number of pixels (ring scheme) and N is number of all pixels.
         # n=N/12, so cos(theta)=5/6 and sin(theta)=(11/36)^0.5=0.5527708
         theta_out = np.arcsin(.5527708)
-        theta_in  = np.arcsin(.5527708*self.d_in/self.d_out)
-        npix_start, npix_stop = hp.ang2pix(nside, [theta_in, theta_out], [0., np.pi*2.])
-        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_start, npix_stop)))*self.d_out
+        npix_stop = hp.ang2pix(nside, theta_out, np.pi*2.)
+        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_stop)))*self.d_out
         rs = (xs**2.+ys**2.)**.5
         if np.isinf(self.f):
             zs = np.zeros_like(xs)
-        elif np.isclose(self.g, 0.):
+        elif np.isinf(self.g):
             zs = -(self.coef['x2']*xs**2. + self.coef['y2']*ys**2. + self.coef['c']) / self.coef['z']
         else:
             a = self.coef['z2']
@@ -338,11 +337,9 @@ class SymmetricQuadricMirror(object):
             zs = (-b-(b**2.-4.*a*c)**.5)/2./a
         # triangulation
         tri = mtri.Triangulation(xs, ys)
-        xc = xs[tri.triangles].mean(axis=1)
-        yc = ys[tri.triangles].mean(axis=1)
-        rc = (xc**2.+yc**2.)**.5
+        rc = (xs[tri.triangles].mean(axis=-1)**2.+ys[tri.triangles].mean(axis=-1)**2.)**.5
         # mask out triangles out of boundaries (d_out & d_in)
-        mask = np.where((rc>(self.d_out*.5)) | (rc<(self.d_in*.5)), 1, 0)
+        mask = np.where(np.logical_or(rc>(self.d_out*.5), rc<(self.d_in*.5)), 1, 0)
         tri.set_mask(mask)
         # convert mirror fixed coordinates to lab coordinate system
         R = quat.rotate(self.q, [xs,ys,zs])
@@ -522,10 +519,10 @@ class SymmetricQuadricMirror(object):
         photon_out['direction'][:] = quat.rotate(
             q, v.transpose()
         ).transpose()
-        photon_out['phase'][:] = photon_in['phase'] + \
-            2.*np.pi*np.mod(
-                np.sum(p.transpose()**2., axis=1)**.5,
-                photon_in['wavelength'])/photon_in['wavelength']
+        assert np.sum(np.isnan(p))==0
+        photon_out['phase'][:] = np.mod(
+            photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'],
+            2.*np.pi)
         return photon_out
 
 class OpticalAssembly(object):
@@ -584,14 +581,26 @@ class OpticalAssembly(object):
         dq = quat.multiply(q, quat.conjugate(self.q))
         self.rotate(dq)
         
-    def draw(self, nside=32, axes=None, return_only=False, draw_virtual=False, highlight_primary=True, **kwargs):
+    def draw(
+            self,
+            nside=32,
+            axes=None,
+            return_only=False,
+            draw_virtual=False,
+            highlight_primary=True,
+            raytrace=None,
+            **kwargs
+    ):
         """Draw triangular surface of all mirrors.
 
         Arguments:
-        nside  - nside of healpix sampling points for each mirror.
-        axes   - matplotlib axes object.
-        return_only - instead of plotting the surface, return the triangles only.
-        kwargs - keyword arguments to pass to plot_trisurf().
+        nside              - nside of healpix sampling points for each mirror.
+        axes               - matplotlib axes object.
+        return_only        - instead of plotting the surface, return the triangles only (boolean switch).
+        draw_virtual       - draw virtual mirrors (boolean switch).
+        hightlight_primary - hightlight primary mirrors (boolean switch).
+        raytrace           - plot ray trace (optional).
+        kwargs             - keyword arguments to pass to plot_trisurf().
         """
         trigs = []
         Zs    = []
@@ -633,6 +642,17 @@ class OpticalAssembly(object):
                         axes.plot_trisurf(trigs[i], Zs[i], alpha=1., color='Red', **kwargs)
                         continue
                 axes.plot_trisurf(trigs[i], Zs[i], alpha=.8, color='Blue', **kwargs)
+            if raytrace is not None:
+                nodes, npts = raytrace.shape
+                for i in range(npts):
+                    axes.plot(
+                        raytrace['position'][:,i,0],
+                        raytrace['position'][:,i,1],
+                        raytrace['position'][:,i,2],
+                        color='Green',
+                        linewidth=.1,
+                        **kwargs
+                    )
             axes.set_xlim(xc-.6*sz, xc+.6*sz)
             axes.set_ylim(yc-.6*sz, yc+.6*sz)
             axes.set_zlim(zc-.6*sz, zc+.6*sz)
