@@ -8,7 +8,7 @@ from pymath.common import norm
 import pymath.quaternion as quat
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
-ou = 1e-3           # optical length unit, as a small portion of the wavelength.
+dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
 
 # super photon properties data type:
 sptype = np.dtype([
@@ -524,7 +524,7 @@ class SymmetricQuadricMirror(object):
         photon_out['direction'][:] = quat.rotate(q, v.transpose()).transpose()
         photon_out['phase'][:]     = photon_in['phase'] + \
             2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
-        photon_out['position'][:] += ou*photon_out['wavelength'].reshape((-1,1))*photon_out['direction']
+        photon_out['position'][:] += dm*photon_out['direction']
         photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*ou, 2.*np.pi)
         return photon_out
 
