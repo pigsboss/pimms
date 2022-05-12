@@ -8,6 +8,7 @@ from pymath.common import norm
 import pymath.quaternion as quat
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
+ou = 1e-3           # optical length unit, as a small portion of the wavelength.
 
 # super photon properties data type:
 sptype = np.dtype([
@@ -16,6 +17,9 @@ sptype = np.dtype([
     ('direction',  'f8', 3),
     ('wavelength', 'f8'),
     ('phase',      'f8')])
+# mirror sequence data type:
+mstype = 'int16'
+
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -508,21 +512,20 @@ class SymmetricQuadricMirror(object):
         phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
         theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
         q = quat.from_angles(phi_a, theta_a)
-        photon_out['weight'][:]    = photon_in['weight']
-        photon_out['position'][:]  = intersection.transpose()
+        photon_out['weight'][:]     = photon_in['weight']
+        photon_out['wavelength'][:] = photon_in['wavelength']
+        photon_out['position'][:]   = intersection.transpose()
         p = np.transpose(photon_out['position'] - photon_in['position'])
         u = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
         d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
         top_mask = np.double([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
         bot_mask = np.double([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
         v = u.transpose()*np.where(d>0., top_mask, bot_mask)
-        photon_out['direction'][:] = quat.rotate(
-            q, v.transpose()
-        ).transpose()
-        assert np.sum(np.isnan(p))==0
-        photon_out['phase'][:] = np.mod(
-            photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'],
-            2.*np.pi)
+        photon_out['direction'][:] = quat.rotate(q, v.transpose()).transpose()
+        photon_out['phase'][:]     = photon_in['phase'] + \
+            2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
+        photon_out['position'][:] += ou*photon_out['wavelength'].reshape((-1,1))*photon_out['direction']
+        photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*ou, 2.*np.pi)
         return photon_out
 
 class OpticalAssembly(object):
@@ -542,18 +545,18 @@ class OpticalAssembly(object):
         """
         self.p = p
         self.q = q
-        self.mirrors = []
+        self.parts = []
         self.name = name
         
-    def add_mirror(self, mirror):
-        self.mirrors.append(mirror)
+    def add_part(self, mirror):
+        self.parts.append(mirror)
         
     def move(self, dp):
         """Move assembly in lab csys by displacement vector dp.
 
         new position: p' = p + dp
         """
-        for m in self.mirrors:
+        for m in self.parts:
             m.p = m.p + dp
         self.p = self.p + dp
         return self.p
@@ -563,7 +566,7 @@ class OpticalAssembly(object):
 
         new attitude: q' = dq q dq'
         """
-        for m in self.mirrors:
+        for m in self.parts:
             m.p = quat.rotate(dq, m.p)
             m.q = quat.multiply(dq, m.q)
         self.q = quat.multiply(dq, self.q)
@@ -611,7 +614,7 @@ class OpticalAssembly(object):
         ymax  = 0.
         zmin  = 0.
         zmax  = 0.
-        for m in self.mirrors:
+        for m in self.parts:
             trig, Z = m.draw(nside=nside, return_only=True)
             trigs.append(trig)
             Zs.append(Z)
@@ -632,13 +635,13 @@ class OpticalAssembly(object):
             if axes is None:
                 fig = plt.figure()
                 axes = fig.add_subplot(111, projection='3d')
-            for i in range(len(self.mirrors)):
-                if self.mirrors[i].is_virtual:
+            for i in range(len(self.parts)):
+                if self.parts[i].is_virtual:
                     if draw_virtual:
                         axes.plot_trisurf(trigs[i], Zs[i], alpha=.5, color='Grey', **kwargs)
                     continue
                 if highlight_primary:
-                    if self.mirrors[i].is_primary:
+                    if self.parts[i].is_primary:
                         axes.plot_trisurf(trigs[i], Zs[i], alpha=1., color='Red', **kwargs)
                         continue
                 axes.plot_trisurf(trigs[i], Zs[i], alpha=.8, color='Blue', **kwargs)
@@ -671,18 +674,17 @@ class OpticalAssembly(object):
         k - indices of mirror encounted with.
         """
         n = np.empty((3, photon_in.size), dtype='double')
-        t = np.empty((photon_in.size, ), dtype='double')
-        k = np.empty((photon_in.size, ), dtype='int16')
+        t = np.empty((photon_in.size,  ), dtype='double')
+        k = np.empty((photon_in.size,  ), dtype=mstype  )
         n[:] = np.nan
         t[:] = np.inf
         k[:] = -1
-        for i in range(len(self.mirrors)):
-            if not self.mirrors[i].is_virtual:
-                ni, ti = self.mirrors[i].intersect(photon_in)
-                m = np.bool_(ti<t)
-                n[:] = np.where(m, ni, n)
-                t[:] = np.where(m, ti, t)
-                k[:] = np.where(m,  i, k)
+        for i in range(len(self.parts)):
+            ni, ti = self.parts[i].intersect(photon_in)
+            m = np.bool_(ti<t)
+            n[:] = np.where(m, ni, n)
+            t[:] = np.where(m, ti, t)
+            k[:] = np.where(m,  i, k)
         return n, t, k
 
     def trace(self, photon_in, steps=1):
@@ -696,17 +698,20 @@ class OpticalAssembly(object):
         photon_trace - photon trace at each step
         """
         photon_trace = np.empty((steps+1, photon_in.size), dtype=sptype)
-        photon_trace[0,:] = photon_in[:]
+        mirror_sequence = np.empty((steps+1, photon_in.size), dtype=mstype)
+        photon_trace[0, :] = photon_in[:]
+        mirror_sequence[0, :] = -1
         for i in range(steps):
-            n,t,k = self.intersect(photon_trace[i,:])
+            n,t,k = self.intersect(photon_trace[i, :])
+            mirror_sequence[i+1,:] = k
             m = np.isinf(t)
             photon_trace[i+1, m] = photon_trace[i,m]
-            hits = np.bincount(k[~m],minlength=len(self.mirrors))
-            for l in range(len(self.mirrors)):
+            hits = np.bincount(k[~m],minlength=len(self.parts))
+            for l in range(len(self.parts)):
                 if hits[l]>0:
                     m = np.bool_(k==l)
-                    photon_trace[i+1, m] = self.mirrors[l].encounter(photon_trace[i, m], n[:, m])
-        return photon_trace
+                    photon_trace[i+1, m] = self.parts[l].encounter(photon_trace[i, m], n[:, m])
+        return photon_trace, mirror_sequence
         
         
 class PhotonCollector(OpticalAssembly):
