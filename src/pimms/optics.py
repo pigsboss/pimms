@@ -589,10 +589,14 @@ class OpticalAssembly(object):
             nside=32,
             axes=None,
             return_only=False,
-            draw_virtual=False,
+            draw_virtual=True,
             highlight_primary=True,
+            highlight_list=[],
             raytrace=None,
-            **kwargs
+            virtual_opts={},
+            highlight_opts={},
+            surface_opts={},
+            lightray_opts={}
     ):
         """Draw triangular surface of all mirrors.
 
@@ -601,9 +605,13 @@ class OpticalAssembly(object):
         axes               - matplotlib axes object.
         return_only        - instead of plotting the surface, return the triangles only (boolean switch).
         draw_virtual       - draw virtual mirrors (boolean switch).
-        hightlight_primary - hightlight primary mirrors (boolean switch).
+        highlight_primary  - highlight primary mirrors (boolean switch).
+        highlight_list     - list of indices of highlight mirrors.
         raytrace           - plot ray trace (optional).
-        kwargs             - keyword arguments to pass to plot_trisurf().
+        virtual_opts       - plot_trisurf keyword options for virtual surfaces, e.g., entrance pupil.
+        highlight_opts     - plot_trisurf keyword options for highlighted surfaces, e.g., primary mirror.
+        surface_opts       - plot_trisurf keyword options for ordinary surfaces.
+        lightray_opts      - plot keyword options for light rays.
         """
         trigs = []
         Zs    = []
@@ -632,19 +640,42 @@ class OpticalAssembly(object):
                   'y':(ymin, ymax),
                   'z':(zmin, zmax)}
         if not return_only:
+            if len(virtual_opts)==0:
+                virtual_opts={
+                    'alpha': 0.6,
+                    'color': 'lightcyan',
+                    'linestyle': 'None'
+                }
+            if len(highlight_opts)==0:
+                highlight_opts={
+                    'alpha': 1.0,
+                    'color': 'red',
+                    'linestyle': 'None'
+                }
+            if len(lightray_opts)==0:
+                lightray_opts={
+                    'alpha':     0.5,
+                    'linewidth': 0.1,
+                    'color':     'green'
+                }
+            if len(surface_opts)==0:
+                surface_opts={
+                    'alpha': 1.0,
+                    'color': 'darkgoldenrod',
+                    'linestyle': 'None'
+                }
             if axes is None:
                 fig = plt.figure()
                 axes = fig.add_subplot(111, projection='3d')
             for i in range(len(self.parts)):
                 if self.parts[i].is_virtual:
                     if draw_virtual:
-                        axes.plot_trisurf(trigs[i], Zs[i], alpha=.5, color='Grey', **kwargs)
+                        axes.plot_trisurf(trigs[i], Zs[i], **virtual_opts)
                     continue
-                if highlight_primary:
-                    if self.parts[i].is_primary:
-                        axes.plot_trisurf(trigs[i], Zs[i], alpha=1., color='Red', **kwargs)
-                        continue
-                axes.plot_trisurf(trigs[i], Zs[i], alpha=.8, color='Blue', **kwargs)
+                if (i in highlight_list) or (highlight_primary and self.parts[i].is_primary):
+                    axes.plot_trisurf(trigs[i], Zs[i], **highlight_opts)
+                    continue
+                axes.plot_trisurf(trigs[i], Zs[i], **surface_opts)
             if raytrace is not None:
                 nodes, npts = raytrace.shape
                 for i in range(npts):
@@ -652,9 +683,7 @@ class OpticalAssembly(object):
                         raytrace['position'][:,i,0],
                         raytrace['position'][:,i,1],
                         raytrace['position'][:,i,2],
-                        color='Green',
-                        linewidth=.1,
-                        **kwargs
+                        **lightray_opts
                     )
             axes.set_xlim(xc-.6*sz, xc+.6*sz)
             axes.set_ylim(yc-.6*sz, yc+.6*sz)
