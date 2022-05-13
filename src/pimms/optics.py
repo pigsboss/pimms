@@ -593,6 +593,7 @@ class OpticalAssembly(object):
             highlight_primary=True,
             highlight_list=[],
             raytrace=None,
+            view_angles=(0,0),
             virtual_opts={},
             highlight_opts={},
             surface_opts={},
@@ -667,6 +668,7 @@ class OpticalAssembly(object):
             if axes is None:
                 fig = plt.figure()
                 axes = fig.add_subplot(111, projection='3d')
+            axes.view_init(*view_angles)
             for i in range(len(self.parts)):
                 if self.parts[i].is_virtual:
                     if draw_virtual:
