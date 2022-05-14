@@ -1,6 +1,7 @@
 """Optical system modelling and analysis functions.
 """
 import numpy as np
+import numexpr as ne
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import healpy as hp
@@ -151,7 +152,7 @@ class LightSource(object):
         sp_dist[:] = np.inf
         for aperture in list_of_apertures:
             n, t = aperture.intersect(sp_start)
-            sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), n.transpose(), sp_stop['position'])
+            sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), np.transpose(quat.rotate(aperture.q, n)+aperture.p), sp_stop['position'])
             sp_dist = np.where(t<sp_dist, t, sp_dist)
         miss_all = np.isinf(sp_dist)
         sp_stop['phase'][ miss_all] = np.nan
@@ -222,7 +223,8 @@ class SymmetricQuadricMirror(object):
             name='unnamed',
             is_primary=False,
             is_virtual=False,
-            is_entrance=False
+            is_entrance=False,
+            is_detector=False
     ):
         """Construct symmetric quadric mirror object.
 
@@ -242,7 +244,8 @@ class SymmetricQuadricMirror(object):
                 where r is coordinate of mirror's fixed csys, r' is coordinate of lab csys,
                 p is position of the mirror in lab csys and q is the attitude quaternion.
         name  - human readable name assigned to the mirror.
-        is_primary, is_virtual and is_entrance are reserved switches for OpticalAssembly object.
+        is_primary, is_virtual, is_entrance and is_detector are reserved switches for
+        OpticalAssembly object.
         """
         self.d_in     = d_in
         self.d_out    = d_out
@@ -255,6 +258,7 @@ class SymmetricQuadricMirror(object):
         self.is_primary  = bool(is_primary)
         self.is_virtual  = bool(is_virtual)
         self.is_entrance = bool(is_entrance)
+        self.is_detector = bool(is_detector)
         if np.isinf(self.f):
             # plane mirror
             self.coef = {
@@ -451,11 +455,12 @@ class SymmetricQuadricMirror(object):
         rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
         # double check out-of-boundary intersections.
         inside = np.logical_and(rn<=(self.d_out*.5), rn>=(self.d_in*.5))
-        t[~t_is_inf] = np.where(inside, t[~t_is_inf], np.inf)
+        t[  ~t_is_inf] = np.where(inside, t[  ~t_is_inf], np.inf)
         n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
-        hit = np.logical_not(np.isinf(t))
-        # convert mirror fixed coordinates back to lab coordinates.
-        n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
+        ##  hit = np.logical_not(np.isinf(t))
+        ##  # convert mirror fixed coordinates back to lab coordinates.
+        ##  n_fixed = np.copy(n)
+        ##  n[:,hit] = quat.rotate(self.q, n_fixed[:,hit]) + self.p
         return n, t
 
     def normal(self, r):
@@ -464,18 +469,33 @@ class SymmetricQuadricMirror(object):
         i.e., along +z direction and perpendicular to the tangential plane of the surface.
 
         Argument:
-        r   - coordinate in lab csys.
+        r   - coordinate in mirror fixed csys.
 
         Return:
         n   - unit normal vector in lab csys.
         """
-
-        # convert r to mirror fixed coordinates
-        r = quat.rotate(quat.conjugate(self.q), r-self.p)
+        d={
+            'x2':self.coef['x2'],
+            'y2':self.coef['y2'],
+            'z2':self.coef['z2'],
+            'xy':self.coef['xy'],
+            'yz':self.coef['yz'],
+            'xz':self.coef['xz'],
+            'x' :self.coef['x' ],
+            'y' :self.coef['y' ],
+            'z' :self.coef['z' ],
+            'rx':r[0],
+            'ry':r[1],
+            'rz':r[2]
+        }
         n = np.double([
-            self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
-            self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
-            self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
+            ne.evaluate('x2*2.*rx+xy*ry+xz*rz+x', local_dict=d),
+            ne.evaluate('y2*2.*ry+xy*rx+yz*rz+y', local_dict=d),
+            ne.evaluate('z2*2.*rz+yz*ry+xz*rx+z', local_dict=d)])
+        ##  n = np.double([
+        ##      self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
+        ##      self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
+        ##      self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
         if np.isinf(self.f):
             n = np.where(n[2]>0., n, -n)
         else:
@@ -503,21 +523,22 @@ class SymmetricQuadricMirror(object):
 
         Arguments:
         photon_in    - incident super photons, with position and direction vectors in lab csys.
-        intersection - corresponding intersections in lab csys.
+        intersection - corresponding intersections in mirror fixed csys.
 
         Return:
         photon_out   - outcome super photons, with position and direction vectors in lab csys.
         """
         photon_out = np.empty_like(photon_in)
         n = self.normal(intersection)        # normal vector in lab csys
-        phi_n, theta_n, _ = quat.xyz2ptr(*n) # longtitude and latitude of normal vector in lab csys
+        phi_n, theta_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
         # attitude Euler's angles
-        phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
-        theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
+        theta_n_is_positive = np.bool_(theta_n>0.)
+        phi_a   = np.where(theta_n_is_positive, phi_n-np.pi, phi_n)
+        theta_a = np.where(theta_n_is_positive, np.pi/2.-theta_n, np.pi/2.+theta_n)
         q = quat.from_angles(phi_a, theta_a)
         photon_out['weight'][:]     = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
-        photon_out['position'][:]   = intersection.transpose()
+        photon_out['position'][:]   = np.transpose(quat.rotate(self.q, intersection)+self.p)
         p = np.transpose(photon_out['position'] - photon_in['position'])
         u = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
         d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
@@ -560,7 +581,7 @@ class OpticalAssembly(object):
                 entrance.append(p)
         return entrance
 
-    def get_primary(self):
+    def get_primaries(self):
         """Get primary mirrors.
         """
         primaries = []
@@ -569,7 +590,7 @@ class OpticalAssembly(object):
                 primaries.append(p)
         return primaries
 
-    def get_virtual(self):
+    def get_virtual_parts(self):
         """Get virtual parts.
         """
         virtuals = []
@@ -577,6 +598,15 @@ class OpticalAssembly(object):
             if p.is_virtual:
                 virtuals.append(p)
         return virtuals
+
+    def get_detectors(self):
+        """Get detectors.
+        """
+        detectors = []
+        for p in self.parts:
+            if p.is_detector:
+                detectors.append(p)
+        return detectors
 
     def get_parts_by_name(self, name):
         """Get parts by name.
@@ -798,8 +828,49 @@ class OpticalAssembly(object):
         return photon_trace, mirror_sequence
 
 class Detector(SymmetricQuadricMirror):
-    def __init__(self):
+    """Pixel-array photon detector model.
+    Geometrically a detector is a innerscribed square of an aperture of a given
+    optical assembly. The aperture where the detector is installed is called its
+    circumcircle aperture. The effective area of the detector is its incirle
+    aperture.
+    """
+    def __init__(
+            self,
+            a,
+            N,
+            p=[0., 0., 0.],
+            q=[1., 0., 0., 0.],
+            name='unnamed detector'
+    ):
+        """Create a pixel-array photon detector object.
+        a    - size of the detector, in meter
+        N    - number of pixels along each axis of the detector
+        p    - position of the center of the detector, in lab csys
+        q    - attitude quaternion of the detector, in lab csys
+        name - user defined name
+        """
+        super(Detector, self).__init__(
+            0.,
+            a*1.414213562373095,
+            f=np.inf,
+            g=np.inf,
+            b=(0, 0),
+            p=np.double(p).reshape((3,1)),
+            q=np.double(q).reshape((4,1)),
+            name=name,
+            is_virtual=False,
+            is_entrance=False,
+            is_primary=False,
+            is_detector=True)
         self.optics = None
+        self.npxs   = N
+        self.a      = a
+        xi = ((np.arange(N)+.5)/N - .5)*a
+        yi = ((np.arange(N)+.5)/N - .5)*a
+        self.x, self.y = np.meshgrid(xi, yi)
+
+    def readout(self, trace):
+        pass
     
 class CassegrainReflector(OpticalAssembly):
     def __init__(self):
