@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import healpy as hp
+import copy
 from pymath.common import norm
 import pymath.quaternion as quat
 
@@ -218,9 +219,10 @@ class SymmetricQuadricMirror(object):
             g=np.inf,
             p=[0., 0., 0.],
             q=[1., 0., 0., 0.],
-            name='',
+            name='unnamed',
             is_primary=False,
-            is_virtual=False
+            is_virtual=False,
+            is_entrance=False
     ):
         """Construct symmetric quadric mirror object.
 
@@ -240,7 +242,7 @@ class SymmetricQuadricMirror(object):
                 where r is coordinate of mirror's fixed csys, r' is coordinate of lab csys,
                 p is position of the mirror in lab csys and q is the attitude quaternion.
         name  - human readable name assigned to the mirror.
-        is_primary and is_virtual are reserved switches for OpticalAssembly object.
+        is_primary, is_virtual and is_entrance are reserved switches for OpticalAssembly object.
         """
         self.d_in     = d_in
         self.d_out    = d_out
@@ -250,8 +252,9 @@ class SymmetricQuadricMirror(object):
         self.p        = np.double(p).reshape((3,1))
         self.q        = np.double(q).reshape((4,1))
         self.name     = name
-        self.is_primary = is_primary
-        self.is_virtual = is_virtual
+        self.is_primary  = bool(is_primary)
+        self.is_virtual  = bool(is_virtual)
+        self.is_entrance = bool(is_entrance)
         if np.isinf(self.f):
             # plane mirror
             self.coef = {
@@ -547,18 +550,63 @@ class OpticalAssembly(object):
         self.q = q
         self.parts = []
         self.name = name
-        
-    def add_part(self, mirror):
-        self.parts.append(mirror)
-        
+
+    def get_entrance(self):
+        """Get entrance apertures.
+        """
+        entrance = []
+        for p in self.parts:
+            if p.is_entrance:
+                entrance.append(p)
+        return entrance
+
+    def get_primary(self):
+        """Get primary mirrors.
+        """
+        primaries = []
+        for p in self.parts:
+            if p.is_primary:
+                primaries.append(p)
+        return primaries
+
+    def get_virtual(self):
+        """Get virtual parts.
+        """
+        virtuals = []
+        for p in self.parts:
+            if p.is_virtual:
+                virtuals.append(p)
+        return virtuals
+
+    def get_parts_by_name(self, name):
+        """Get parts by name.
+        """
+        parts = []
+        for p in self.parts:
+            if p.name == name:
+                parts.append(p)
+        return parts
+    
+    def add_part(self, part):
+        """Append SymmetricQuadricMirror object to the current assembly.
+        """
+        self.parts.append(part)
+
+    def join(self, guest_assembly):
+        """Join all parts of an existing guest OpticalAssembly object to the
+        current object (host) so that the guest can be safely deleted afterwards.
+        """
+        for part in guest_assembly.parts:
+            self.add_part(copy.deepcopy(part))
+    
     def move(self, dp):
         """Move assembly in lab csys by displacement vector dp.
 
         new position: p' = p + dp
         """
         for m in self.parts:
-            m.p = m.p + dp
-        self.p = self.p + dp
+            m.p = m.p + np.double(dp).reshape((3,1))
+        self.p = self.p + np.double(dp).reshape((3,1))
         return self.p
     
     def rotate(self, dq):
@@ -567,21 +615,21 @@ class OpticalAssembly(object):
         new attitude: q' = dq q dq'
         """
         for m in self.parts:
-            m.p = quat.rotate(dq, m.p)
-            m.q = quat.multiply(dq, m.q)
-        self.q = quat.multiply(dq, self.q)
+            m.p = quat.rotate(np.double(dq).reshape((4,1)), m.p)
+            m.q = quat.multiply(np.double(dq).reshape((4,1)), m.q)
+        self.q = quat.multiply(np.double(dq).reshape((4,1)), self.q)
         return self.q
     
     def set_p(self, p):
         """Move to new position p.
         """
-        dp = p-self.p
+        dp = np.double(p).reshape((3,1))-self.p
         self.move(dp)
         
     def set_q(self, q):
         """Rotate to new attitude q.
         """
-        dq = quat.multiply(q, quat.conjugate(self.q))
+        dq = quat.multiply(np.double(q).reshape((4,1)), quat.conjugate(self.q))
         self.rotate(dq)
         
     def draw(
@@ -597,7 +645,8 @@ class OpticalAssembly(object):
             virtual_opts={},
             highlight_opts={},
             surface_opts={},
-            lightray_opts={}
+            lightray_opts={},
+            axes_fontsize=12
     ):
         """Draw triangular surface of all mirrors.
 
@@ -613,6 +662,7 @@ class OpticalAssembly(object):
         highlight_opts     - plot_trisurf keyword options for highlighted surfaces, e.g., primary mirror.
         surface_opts       - plot_trisurf keyword options for ordinary surfaces.
         lightray_opts      - plot keyword options for light rays.
+        axes_fontsize      - font size for axes, such as labels.
         """
         trigs = []
         Zs    = []
@@ -690,6 +740,9 @@ class OpticalAssembly(object):
             axes.set_xlim(xc-.6*sz, xc+.6*sz)
             axes.set_ylim(yc-.6*sz, yc+.6*sz)
             axes.set_zlim(zc-.6*sz, zc+.6*sz)
+            axes.set_xlabel('x, in meters', fontsize=axes_fontsize)
+            axes.set_ylabel('y, in meters', fontsize=axes_fontsize)
+            axes.set_zlabel('z, in meters', fontsize=axes_fontsize)
             plt.show()
         return trigs, Zs, extent
     
@@ -743,10 +796,19 @@ class OpticalAssembly(object):
                     m = np.bool_(k==l)
                     photon_trace[i+1, m] = self.parts[l].encounter(photon_trace[i, m], n[:, m])
         return photon_trace, mirror_sequence
-        
-        
+
+class Detector(SymmetricQuadricMirror):
+    def __init__(self):
+        self.optics = None
+    
+class CassegrainReflector(OpticalAssembly):
+    def __init__(self):
+        pass
+    
 class PhotonCollector(OpticalAssembly):
-    pass
+    def __init__(self):
+        pass
+    
 
 class SIM(OpticalAssembly):
     """Simplified Michelson stellar interferometer model.
