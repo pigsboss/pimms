@@ -8,6 +8,7 @@ import healpy as hp
 import copy
 from pymath.common import norm
 import pymath.quaternion as quat
+from time import time
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
@@ -152,7 +153,7 @@ class LightSource(object):
         sp_dist[:] = np.inf
         for aperture in list_of_apertures:
             n, t = aperture.intersect(sp_start)
-            sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), np.transpose(quat.rotate(aperture.q, n)+aperture.p), sp_stop['position'])
+            sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), np.transpose(quat.rotate(aperture.q,n)+aperture.p), sp_stop['position'])
             sp_dist = np.where(t<sp_dist, t, sp_dist)
         miss_all = np.isinf(sp_dist)
         sp_stop['phase'][ miss_all] = np.nan
@@ -371,7 +372,7 @@ class SymmetricQuadricMirror(object):
             plt.show()
         return tri, Z
     
-    def intersect(self, photon_in):
+    def intersect(self, photon_in, profiling=False):
         """Find intersection of incident light ray and the mirror surface.
 
         Arguments:
@@ -383,10 +384,15 @@ class SymmetricQuadricMirror(object):
         distance     - distance between the starting point and the intersection, or np.inf if the
                        intersection does not exist.
         """
+        tic = time()
         # convert lab coordinates to mirror fixed coordinates.
         s,u = np.broadcast_arrays(
             quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p),
             quat.rotate(quat.conjugate(self.q), photon_in['direction'].transpose()))
+        if profiling:
+            toc = time()-tic
+            print('coordinate transform: {:f} seconds'.format(toc))
+            tic = time()
         # solve equations:
         # x = s[0] + u[0]*t,
         # y = s[1] + u[1]*t, and
@@ -411,6 +417,10 @@ class SymmetricQuadricMirror(object):
         c = self.coef['x2']*s[0]**2.  + self.coef['y2']*s[1]**2.  + self.coef['z2']*s[2]**2. + \
             self.coef['xy']*s[0]*s[1] + self.coef['xz']*s[0]*s[2] + self.coef['yz']*s[1]*s[2] + \
             self.coef['x']*s[0] + self.coef['y']*s[1] + self.coef['z']*s[2] + self.coef['c']
+        if profiling:
+            toc = time()-tic
+            print('setup 2nd-order equation: {:f} seconds'.format(toc))
+            tic = time()
         a_is_0 = np.isclose(a, 0.)
         b_is_0 = np.isclose(b, 0.)
         t = np.zeros_like(s[0])
@@ -453,14 +463,17 @@ class SymmetricQuadricMirror(object):
         n[:, t_is_inf] = np.nan
         n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
         rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
+        if profiling:
+            toc = time()-tic
+            print('branching and mapping: {:f} seconds'.format(toc))
+            tic = time()
         # double check out-of-boundary intersections.
         inside = np.logical_and(rn<=(self.d_out*.5), rn>=(self.d_in*.5))
         t[  ~t_is_inf] = np.where(inside, t[  ~t_is_inf], np.inf)
         n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
         ##  hit = np.logical_not(np.isinf(t))
         ##  # convert mirror fixed coordinates back to lab coordinates.
-        ##  n_fixed = np.copy(n)
-        ##  n[:,hit] = quat.rotate(self.q, n_fixed[:,hit]) + self.p
+        ##  n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
         return n, t
 
     def normal(self, r):
@@ -474,6 +487,7 @@ class SymmetricQuadricMirror(object):
         Return:
         n   - unit normal vector in lab csys.
         """
+        # r = quat.rotate(quat.conjugate(self.q), r-self.p)
         d={
             'x2':self.coef['x2'],
             'y2':self.coef['y2'],
@@ -506,6 +520,7 @@ class SymmetricQuadricMirror(object):
     
     def encounter(self, photon_in, intersection):
         """Determine outcomes when a super photon encounters with the mirror.
+        Validation of intersections should be guaranteed in advance.
 
         Outcomes:
         reflected photon   - same weight as incident photon
@@ -523,7 +538,7 @@ class SymmetricQuadricMirror(object):
 
         Arguments:
         photon_in    - incident super photons, with position and direction vectors in lab csys.
-        intersection - corresponding intersections in mirror fixed csys.
+        intersection - corresponding intersections.
 
         Return:
         photon_out   - outcome super photons, with position and direction vectors in lab csys.
@@ -532,9 +547,8 @@ class SymmetricQuadricMirror(object):
         n = self.normal(intersection)        # normal vector in lab csys
         phi_n, theta_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
         # attitude Euler's angles
-        theta_n_is_positive = np.bool_(theta_n>0.)
-        phi_a   = np.where(theta_n_is_positive, phi_n-np.pi, phi_n)
-        theta_a = np.where(theta_n_is_positive, np.pi/2.-theta_n, np.pi/2.+theta_n)
+        phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
+        theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
         q = quat.from_angles(phi_a, theta_a)
         photon_out['weight'][:]     = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
@@ -549,7 +563,7 @@ class SymmetricQuadricMirror(object):
         photon_out['phase'][:]     = photon_in['phase'] + \
             2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
         photon_out['position'][:] += dm*photon_out['direction']
-        photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*ou, 2.*np.pi)
+        photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*dm, 2.*np.pi)
         return photon_out
 
 class OpticalAssembly(object):
@@ -801,7 +815,7 @@ class OpticalAssembly(object):
             k[:] = np.where(m,  i, k)
         return n, t, k
 
-    def trace(self, photon_in, steps=1):
+    def trace(self, photon_in, steps=1, profiling=False):
         """Trace photons in optical assembly.
 
         Arguments:
@@ -816,15 +830,23 @@ class OpticalAssembly(object):
         photon_trace[0, :] = photon_in[:]
         mirror_sequence[0, :] = -1
         for i in range(steps):
+            tic = time()
             n,t,k = self.intersect(photon_trace[i, :])
-            mirror_sequence[i+1,:] = k
+            if profiling:
+                toc = time()-tic
+                print('computing intersection: {:f} seconds'.format(toc))
+            mirror_sequence[i+1, :] = k
             m = np.isinf(t)
-            photon_trace[i+1, m] = photon_trace[i,m]
+            photon_trace[i+1, m] = photon_trace[i, m]
             hits = np.bincount(k[~m],minlength=len(self.parts))
             for l in range(len(self.parts)):
+                tic = time()
                 if hits[l]>0:
                     m = np.bool_(k==l)
                     photon_trace[i+1, m] = self.parts[l].encounter(photon_trace[i, m], n[:, m])
+                if profiling:
+                    toc = time()-tic
+                    print('computing outcomes: {:f} seconds'.format(toc))
         return photon_trace, mirror_sequence
 
 class Detector(SymmetricQuadricMirror):
@@ -868,9 +890,33 @@ class Detector(SymmetricQuadricMirror):
         xi = ((np.arange(N)+.5)/N - .5)*a
         yi = ((np.arange(N)+.5)/N - .5)*a
         self.x, self.y = np.meshgrid(xi, yi)
+        self.photon_buffer = np.empty((0,), dtype=sptype)
 
-    def readout(self, trace):
-        pass
+    def encounter(self, photon_in, intersection):
+        """Overriding SymmetricQuadricMirror.encounter()
+        """
+        photon_out = super(Detector, self).encounter(photon_in, intersection)
+        photon_det = np.copy(photon_out)
+        photon_det['position'][:] = intersection.transpose()
+        self.photon_buffer = np.concatenate((self.photon_buffer, photon_det))
+        return photon_out
+    
+    def readout(self, clear_buffer=True):
+        """Register buffered photon events to pixel grid, get binned counts
+        and clear photon buffer.
+        """
+        xid = np.int64((self.photon_buffer['position'][:,0]+self.a/2.)/self.a*self.npxs)
+        yid = np.int64((self.photon_buffer['position'][:,1]+self.a/2.)/self.a*self.npxs)
+        pid = yid*self.npxs+xid
+        re  = (self.photon_buffer['weight']**.5)*np.cos(self.photon_buffer['phase'])
+        im  = (self.photon_buffer['weight']**.5)*np.sin(self.photon_buffer['phase'])
+        remap = np.bincount(pid.ravel(), weights=re, minlength=self.npxs*self.npxs)
+        immap = np.bincount(pid.ravel(), weights=im, minlength=self.npxs*self.npxs)
+        amp = np.reshape((remap**2.+immap**2.)**.5, (self.npxs, self.npxs))
+        pha = np.ma.masked_array(np.reshape(np.arctan2(immap, remap), (self.npxs, self.npxs)), mask=~(amp>0.))
+        if clear_buffer:
+            self.photon_buffer = np.empty((0,), dtype=sptype)
+        return amp, pha
     
 class CassegrainReflector(OpticalAssembly):
     def __init__(self):
