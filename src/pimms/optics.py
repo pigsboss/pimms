@@ -42,7 +42,7 @@ class LightSource(object):
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
         self.direction  = np.double([np.sin(self.theta)*np.cos(self.phi), np.sin(self.theta)*np.sin(self.phi), np.cos(self.theta)]) # unit vector from the origin to the source
-    def __call__(self, list_of_apertures, num_super_photons, dt):
+    def __call__(self, list_of_apertures, num_super_photons, dt, sampling='random'):
         """Shed super photons onto mirrors.
 
         list_of_apertures - list of apertures of optical system
@@ -89,9 +89,30 @@ class LightSource(object):
             opm = np.min(op) # minimum optical path
             u = []
             for aperture in list_of_apertures:
-                rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+
-                           aperture.d_in**2.)**.5)
-                phi = 2.*np.pi*np.random.rand(num_super_photons)
+                if sampling.lower()=='random':
+                    rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+
+                               aperture.d_in**2.)**.5)
+                    phi = 2.*np.pi*np.random.rand(num_super_photons)
+                elif sampling.lower()=='uniform':
+                    N = int((num_super_photons/np.pi/(aperture.d_out**2.-aperture.d_in**2.)*4.*aperture.d_out**2.)**.5)
+                    xgv = ((np.arange(N)+.5)/N-.5)*aperture.d_out
+                    ygv = ((np.arange(N)+.5)/N-.5)*aperture.d_out
+                    x,y = np.meshgrid(xgv,ygv)
+                    rho = (x.ravel()**2.+y.ravel()**2.)**.5
+                    phi = np.arctan2(y.ravel(),x.ravel())
+                    sel = (rho>=aperture.d_in*.5) & (rho<=aperture.d_out*.5)
+                    rho = rho[sel]
+                    phi = phi[sel]
+                elif sampling.lower()=='dizzle':
+                    N = int((num_super_photons/np.pi/(aperture.d_out**2.-aperture.d_in**2.)*4.*aperture.d_out**2.)**.5)
+                    xgv = ((np.arange(N)+.5)/N-.5)*aperture.d_out+(np.random.rand(1)-.5)*aperture.d_out/N
+                    ygv = ((np.arange(N)+.5)/N-.5)*aperture.d_out+(np.random.rand(1)-.5)*aperture.d_out/N
+                    x,y = np.meshgrid(xgv,ygv)
+                    rho = (x.ravel()**2.+y.ravel()**2.)**.5
+                    phi = np.arctan2(y.ravel(),x.ravel())
+                    sel = (rho>=aperture.d_in*.5) & (rho<=aperture.d_out*.5)
+                    rho = rho[sel]
+                    phi = phi[sel]
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
                 t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
