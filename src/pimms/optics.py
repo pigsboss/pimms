@@ -944,20 +944,20 @@ class CassegrainReflector(OpticalAssembly):
         pass
     
 class PhotonCollector(OpticalAssembly):
-    def __init__(self, d=2., f=5., r=10., fov=np.deg2rad(1.)):
+    def __init__(self, d=2., f=4., r=10., fov=np.deg2rad(5./60.)):
         super(PhotonCollector, self).__init__()
         primary_f      = f
         primary_d_out  = d
         secondary_f    = f/r
         beam_d         = d/r
-        primary_d_in   = beam_d + 2.*np.tan(fov*.5)*f
+        primary_d_in   = beam_d + 2.*np.tan(fov*.5)*f*r
         secondary_d    = primary_d_in + 2.*np.tan(fov*.5)*f
         entrance_d_out = primary_d_out + 2.*np.tan(fov*.5)*f
         entrance_d_in  = secondary_d
         a0 = SymmetricQuadricMirror(entrance_d_in, entrance_d_out, f=np.inf,      b=(-1,-1), g=np.inf, is_entrance=True, is_virtual=True)
         m0 = SymmetricQuadricMirror(primary_d_in,  primary_d_out,  f=primary_f,   b=( 1, 0), g=np.inf, is_primary=True)
         m1 = SymmetricQuadricMirror(0,             secondary_d,    f=secondary_f, b=( 0, 1), g=np.inf)
-        m2 = SymmetricQuadricMirror(0,             secondary_d,    f=np.inf,      b=( 1, 0), g=np.inf, p=[0., 0., -primary_f-2*secondary_d], q=quat.from_angles(0., -np.pi/4.))
+        m2 = SymmetricQuadricMirror(0,             secondary_d*2., f=np.inf,      b=( 1, 0), g=np.inf, p=[0., 0., -primary_f-2*secondary_d], q=quat.from_angles(0., -np.pi/4.))
         self.add_part(a0)
         self.add_part(m0)
         self.add_part(m1)
@@ -1031,14 +1031,23 @@ x-axis: along beam reflected by M20 (M21).
             collector_r=10.,
             collector_f=5.,
             combiner_b=2.,
-            combiner_r=10.,
+            combiner_r=4.,
             combiner_f=5.,
+            optics_fov=np.deg2rad(1.),
+            detector_a=0.1,
             detector_n=128,
-            fov=np.deg2rad(1.)
+            detector_fov=np.deg2rad(1./60.)
     ):
         super(SIM, self).__init__()
-        pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=fov)
-        pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=fov)
+        pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
+        pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
+        m3_d = pc0.parts[-1].d_out
+        m4_d_out = combiner_b+m3_d+2.*np.tan(.5*optics_fov)*combiner_f
+        beam_d = m4_d_out / combiner_r
+        m5_f = combiner_f / combiner_r
+        m5_g = -0.5*detector_a/np.tan(.5*detector_fov)
+        m4_d_in = beam_d*m5_g/(m5_g-combiner_f+m5_f) + 2.*np.tan(.5*optics_fov)*collector_r*combiner_r*combiner_f
+        
         m30 = SymmetricQuadricMirror()
         m31 = SymmetricQuadricMirror()
         m4  = SymmetricQuadricMirror()
