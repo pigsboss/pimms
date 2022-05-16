@@ -42,7 +42,7 @@ class LightSource(object):
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
         self.direction  = np.double([np.sin(self.theta)*np.cos(self.phi), np.sin(self.theta)*np.sin(self.phi), np.cos(self.theta)]) # unit vector from the origin to the source
-    def __call__(self, list_of_apertures, num_super_photons, dt, sampling='random'):
+    def __call__(self, list_of_apertures, num_super_photons, dt, sampling='dizzle'):
         """Shed super photons onto mirrors.
 
         list_of_apertures - list of apertures of optical system
@@ -534,7 +534,7 @@ class SymmetricQuadricMirror(object):
         if np.isinf(self.f):
             n = np.where(n[2]>0., n, -n)
         else:
-            n = np.where(np.sum(n*r, axis=0)>0., n, -n)
+            n = np.where(np.sum(n*r, axis=0)<0., n, -n)
         # convert n to lab csys
         n = quat.rotate(self.q, n)
         return n
@@ -579,7 +579,7 @@ class SymmetricQuadricMirror(object):
         d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
         top_mask = np.double([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
         bot_mask = np.double([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
-        v = u.transpose()*np.where(d>0., top_mask, bot_mask)
+        v = u.transpose()*np.where(d<0., top_mask, bot_mask)
         photon_out['direction'][:] = quat.rotate(q, v.transpose()).transpose()
         photon_out['phase'][:]     = photon_in['phase'] + \
             2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
@@ -944,9 +944,24 @@ class CassegrainReflector(OpticalAssembly):
         pass
     
 class PhotonCollector(OpticalAssembly):
-    def __init__(self):
-        pass
-    
+    def __init__(self, d=2., f=5., r=10., fov=np.deg2rad(1.)):
+        super(PhotonCollector, self).__init__()
+        primary_f      = f
+        primary_d_out  = d
+        secondary_f    = f/r
+        beam_d         = d/r
+        primary_d_in   = beam_d + 2.*np.tan(fov*.5)*f
+        secondary_d    = primary_d_in + 2.*np.tan(fov*.5)*f
+        entrance_d_out = primary_d_out + 2.*np.tan(fov*.5)*f
+        entrance_d_in  = secondary_d
+        a0 = SymmetricQuadricMirror(entrance_d_in, entrance_d_out, f=np.inf,      b=(-1,-1), g=np.inf, is_entrance=True, is_virtual=True)
+        m0 = SymmetricQuadricMirror(primary_d_in,  primary_d_out,  f=primary_f,   b=( 1, 0), g=np.inf, is_primary=True)
+        m1 = SymmetricQuadricMirror(0,             secondary_d,    f=secondary_f, b=( 0, 1), g=np.inf)
+        m2 = SymmetricQuadricMirror(0,             secondary_d,    f=np.inf,      b=( 1, 0), g=np.inf, p=[0., 0., -primary_f-2*secondary_d], q=quat.from_angles(0., -np.pi/4.))
+        self.add_part(a0)
+        self.add_part(m0)
+        self.add_part(m1)
+        self.add_part(m2)
 
 class SIM(OpticalAssembly):
     """Simplified Michelson stellar interferometer model.
@@ -1010,12 +1025,33 @@ origin: focus of primary mirror.
 z-axis: along principal optical axis of beam compressor, from M10 (M11) to M20 (M21).
 x-axis: along beam reflected by M20 (M21).
 """
-    def __init__(self):
-        pass
-    def __call__(self):
-        pass
-
-
+    def __init__(
+            self,
+            collector_d=2.,
+            collector_r=10.,
+            collector_f=5.,
+            combiner_b=2.,
+            combiner_r=10.,
+            combiner_f=5.,
+            detector_n=128,
+            fov=np.deg2rad(1.)
+    ):
+        super(SIM, self).__init__()
+        pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=fov)
+        pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=fov)
+        m30 = SymmetricQuadricMirror()
+        m31 = SymmetricQuadricMirror()
+        m4  = SymmetricQuadricMirror()
+        m5  = SymmetricQuadricMirror()
+        d0  = Detector(a=detector_a, N=detector_n)
+        self.add_part(m30)
+        self.add_part(m31)
+        self.add_part(m4)
+        self.add_part(m5)
+        self.add_part(d0)
+        self.join(pc0)
+        self.join(pc1)
+        
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
 
