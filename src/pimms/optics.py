@@ -1032,43 +1032,51 @@ x-axis: along beam reflected by M20 (M21).
     def __init__(
             self,
             collector_d=2.,
-            collector_r=10.,
+            collector_r=5.,
             collector_f=5.,
             combiner_b=2.,
-            combiner_r=4.,
+            combiner_r=5.,
             combiner_f=5.,
-            optics_fov=np.deg2rad(5./60.),
+            optics_fov=np.deg2rad(10./60.),
             detector_a=0.05,
             detector_n=128,
-            detector_fov=np.deg2rad(1./60.),
+            detector_fov=np.deg2rad(3./60.),
             init_b=10.
     ):
         super(SIM, self).__init__()
         pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
         pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
         m3_d = pc0.parts[-1].d_out
-        m4_d_out = combiner_b+m3_d+2.*np.tan(.5*optics_fov)*combiner_f
-        beam_d = m4_d_out / combiner_r
-        m5_f = combiner_f / combiner_r
-        m5_g = -0.5*detector_a/np.tan(.5*detector_fov*collector_r*combiner_r)
-        m4_d_in = beam_d*m5_g/(m5_g-combiner_f+m5_f) + \
+        m6_d_out = combiner_b+m3_d+2.*np.tan(.5*optics_fov)*combiner_f
+        beam_d = m6_d_out / combiner_r
+        m7_f = combiner_f / combiner_r
+        m7_g = -0.5*detector_a/np.tan(.5*detector_fov*collector_r*combiner_r)
+        m6_d_in = beam_d*m7_g/(m7_g-combiner_f+m7_f) + \
             2.*np.tan(.5*optics_fov)*collector_r*combiner_r*combiner_f
-        m5_d = max(
-            beam_d+2.*np.tan(.5*optics_fov)*m5_f,
-            m4_d_in+2.*np.tan(.5*optics_fov)*combiner_f)
-        m30 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-combiner_b*.5, 0., 0.], q=quat.from_angles(0., -np.pi/4.))
-        m31 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ combiner_b*.5, 0., 0.], q=quat.from_angles(0.,  np.pi/4.))
-        m4  = SymmetricQuadricMirror(m4_d_in, m4_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True)
-        m5  = SymmetricQuadricMirror(0., m5_d, f=m5_f, g=m5_g, b=(0,1))
-        d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m5_g-m5_f])
+        m7_d = max(
+            beam_d+2.*np.tan(.5*optics_fov)*m7_f,
+            m6_d_in+2.*np.tan(.5*optics_fov)*combiner_f)
+        m30 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[-m6_d_out*.5-.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0.,  np.pi/4.))
+        m31 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[ m6_d_out*.5+.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0., -np.pi/4.))
+        m40 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-m6_d_out*.5-.5*m3_d, 0., 0.], q=quat.from_angles(0.,  np.pi/4.))
+        m41 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ m6_d_out*.5+.5*m3_d, 0., 0.], q=quat.from_angles(0., -np.pi/4.))
+        m50 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-combiner_b*.5, 0., 0.], q=quat.from_angles(0., -np.pi/4.))
+        m51 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ combiner_b*.5, 0., 0.], q=quat.from_angles(0.,  np.pi/4.))
+        m6  = SymmetricQuadricMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True)
+        m7  = SymmetricQuadricMirror(0., m7_d, f=m7_f, g=m7_g, b=(0,1))
+        d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m7_g-m7_f])
         self.add_part(m30)
         self.add_part(m31)
-        self.add_part(m4)
-        self.add_part(m5)
+        self.add_part(m40)
+        self.add_part(m41)
+        self.add_part(m50)
+        self.add_part(m51)
+        self.add_part(m6)
+        self.add_part(m7)
         self.add_part(d0)
-        pc0.move([-init_b*.5, 0., -pc0.parts[-1].p[-1]])
+        pc0.move([-init_b*.5, 0., 0.])
         pc1.rotate([0., 0., 0., 1.])
-        pc1.move([ init_b*.5, 0.,  pc0.p.ravel()[-1]])
+        pc1.move([ init_b*.5, 0., 0.])
         self.join(pc0)
         self.join(pc1)
         
