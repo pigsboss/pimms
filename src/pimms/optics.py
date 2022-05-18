@@ -393,7 +393,7 @@ class SymmetricQuadricMirror(object):
             plt.show()
         return tri, Z
     
-    def intersect(self, photon_in, profiling=False):
+    def intersect(self, photon_in, profiling=False, min_corrections=2, max_corrections=5):
         """Find intersection of incident light ray and the mirror surface.
 
         Arguments:
@@ -483,24 +483,60 @@ class SymmetricQuadricMirror(object):
         t_is_inf = np.isinf(t)
         n[:, t_is_inf] = np.nan
         n[:,~t_is_inf] = s[:,~t_is_inf] + u[:,~t_is_inf]*t[~t_is_inf]
-        rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
         if profiling:
             toc = time()-tic
             print('branching and mapping: {:f} seconds'.format(toc))
             tic = time()
+        # rule out intersections on the other branch of hyperbolic surface
+        if self.g<0:
+            inside = np.bool_(n[2,~t_is_inf]>(self.g-self.f)/2.)
+            t[  ~t_is_inf] = np.where(inside, t[  ~t_is_inf], np.inf)
+            n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
+        # quadric error linear correction
+        # quadric error is zero-mean bell-curve distributed error, typically around 1e-9
+        k = 0
+        t_is_inf = np.isinf(t)
+        z = self.height(n[0,~t_is_inf], n[1,~t_is_inf])
+        dz = (n[2,~t_is_inf]-z)
+        while k<min_corrections or (k<max_corrections and not np.all(np.isclose(dz, 0.))):
+            v = self.normal(np.double([n[0,~t_is_inf], n[1,~t_is_inf], z])) # normal vector
+            cos_theta = v[2]/np.sum(v**2., axis=0)**.5
+            cos_alpha = np.abs(np.sum(u[:,~t_is_inf]*v[:],axis=0)) / \
+                quat.norm(u[:,~t_is_inf]) / quat.norm(v)
+            dt = dz*cos_theta/cos_alpha
+            t[  ~t_is_inf] = t[  ~t_is_inf]+dt
+            n[:,~t_is_inf] = n[:,~t_is_inf]+dt*u[:,~t_is_inf]
+            z = self.height(n[0,~t_is_inf], n[1,~t_is_inf])
+            dz = (n[2,~t_is_inf]-z)
+            k += 1
         # check out-of-boundary intersections.
+        t_is_inf = np.isinf(t)
+        rn = (n[0,~t_is_inf]**2. + n[1,~t_is_inf]**2.)**.5
         inside = np.bool_(rn<=(self.d_out*.5)) & \
             np.bool_(rn>=(self.d_in*.5))
-        if self.g<0:
-            # hyperbolic
-            inside = inside & np.bool_(n[2,~t_is_inf]>(self.g-self.f)/2.)
         t[  ~t_is_inf] = np.where(inside, t[  ~t_is_inf], np.inf)
         n[:,~t_is_inf] = np.where(inside, n[:,~t_is_inf], np.nan)
-        ##  hit = np.logical_not(np.isinf(t))
-        ##  # convert mirror fixed coordinates back to lab coordinates.
-        ##  n[:,hit] = quat.rotate(self.q, n[:,hit]) + self.p
         return n, t
 
+    def height(self, x, y):
+        """Get z-coordinate (height) of surface at (x,y) in fixed csys.
+        """
+        z = np.empty_like(x)
+        a = self.coef['z2']
+        b = self.coef['xz']*x + self.coef['yz']*y + self.coef['z']
+        c = self.coef['x2']*x**2. + self.coef['y2']*y**2. + \
+            self.coef['xy']*x*y + \
+            self.coef['x']*x + self.coef['y']*y + self.coef['c']
+        b_is_0 = np.isclose(b, 0.)
+        if np.isclose(a, 0.):
+            z[ b_is_0] = np.nan
+            z[~b_is_0] = -c[~b_is_0] / b[~b_is_0]
+            return z
+        else:
+            d = -(b**2. - 4.*a*c)**.5
+        z = (-b+d)/2./a
+        return z
+    
     def normal(self, r):
         """Normal vector at position r of the surface.
         A normal vector is a unit vector from given position at the surface towards the focus,
@@ -510,37 +546,35 @@ class SymmetricQuadricMirror(object):
         r   - coordinate in mirror fixed csys.
 
         Return:
-        n   - unit normal vector in lab csys.
+        n   - unit normal vector in fixed csys.
         """
         # r = quat.rotate(quat.conjugate(self.q), r-self.p)
-        d={
-            'x2':self.coef['x2'],
-            'y2':self.coef['y2'],
-            'z2':self.coef['z2'],
-            'xy':self.coef['xy'],
-            'yz':self.coef['yz'],
-            'xz':self.coef['xz'],
-            'x' :self.coef['x' ],
-            'y' :self.coef['y' ],
-            'z' :self.coef['z' ],
-            'rx':r[0],
-            'ry':r[1],
-            'rz':r[2]
-        }
+        # d={
+        #     'x2':self.coef['x2'],
+        #     'y2':self.coef['y2'],
+        #     'z2':self.coef['z2'],
+        #     'xy':self.coef['xy'],
+        #     'yz':self.coef['yz'],
+        #     'xz':self.coef['xz'],
+        #     'x' :self.coef['x' ],
+        #     'y' :self.coef['y' ],
+        #     'z' :self.coef['z' ],
+        #     'rx':r[0],
+        #     'ry':r[1],
+        #     'rz':r[2]
+        # }
+        # n = np.double([
+        #     ne.evaluate('x2*2.*rx+xy*ry+xz*rz+x', local_dict=d),
+        #     ne.evaluate('y2*2.*ry+xy*rx+yz*rz+y', local_dict=d),
+        #     ne.evaluate('z2*2.*rz+yz*ry+xz*rx+z', local_dict=d)])
         n = np.double([
-            ne.evaluate('x2*2.*rx+xy*ry+xz*rz+x', local_dict=d),
-            ne.evaluate('y2*2.*ry+xy*rx+yz*rz+y', local_dict=d),
-            ne.evaluate('z2*2.*rz+yz*ry+xz*rx+z', local_dict=d)])
-        ##  n = np.double([
-        ##      self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
-        ##      self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
-        ##      self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
+            self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
+            self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
+            self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
         if np.isinf(self.f):
             n = np.where(n[2]>0., n, -n)
         else:
             n = np.where(np.sum(n*r, axis=0)<0., n, -n)
-        # convert n to lab csys
-        n = quat.rotate(self.q, n)
         return n
     
     def encounter(self, photon_in, intersection):
@@ -569,7 +603,7 @@ class SymmetricQuadricMirror(object):
         photon_out   - outcome super photons, with position and direction vectors in lab csys.
         """
         photon_out = np.empty_like(photon_in)
-        n = self.normal(intersection)        # normal vector in lab csys
+        n = quat.rotate(self.q, self.normal(intersection)) # normal vector in lab csys
         phi_n, theta_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
         # attitude Euler's angles
         phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
@@ -606,8 +640,8 @@ class OpticalAssembly(object):
         r' = qrq' + p,
         where r is vector in assembly fixed csys and r' is vector in lab csys.
         """
-        self.p = p
-        self.q = q
+        self.p = np.double(p).reshape((3,1))
+        self.q = np.double(q).reshape((4,1))
         self.parts = []
         self.name = name
 
@@ -663,10 +697,11 @@ class OpticalAssembly(object):
 
     def join(self, guest_assembly):
         """Join all parts of an existing guest OpticalAssembly object to the
-        current object (host) so that the guest can be safely deleted afterwards.
+        current object (host).
         """
         for part in guest_assembly.parts:
-            self.add_part(copy.deepcopy(part))
+            if part not in self.parts:
+                self.add_part(part)
     
     def move(self, dp):
         """Move assembly in lab csys by displacement vector dp.
@@ -969,69 +1004,69 @@ class PhotonCollector(OpticalAssembly):
 
 class SIM(OpticalAssembly):
     """Simplified Michelson stellar interferometer model.
-
-1. Overall model
-
-      M10                                      M11
- |    --   |                              |    --    |
- |   /| \  |                              |   / |\   |
- |  / ||---+------------- B --------------+----|| \  |
- | /  |   \|          |-- B' --|          | /   |  \ |
- ---- |  ---- M00            M7       M01 ----  |  ----
-      |            M50   ----   M51             |
-      |       M40 /---\  |  |  /---\M41         |
-      |           |   | /|  |\ |   |            |
-      |           |   |/ |  | \|   |            |
-      |           |   ---\  /---   |            |
-      \-----------/   M6  ||       \------------/
-     M20         M30      \/        M31         M21
-                          -- D0
-
-M00 (M01) - Concave parabolic mirror, primary mirror of left (right) collector.
-M10 (M11) - Convex parabolic mirror, secondary mirror of left (right) collector.
-M20 (M21) - Plane mirror, periscope mirror of left (right) collector.
-M30, M31  - Plane mirrors, periscope mirrors of beam combiner.
-M40, M50  - Plane mirrors, delay line controller of the left arm.
-M41, M51  - Plane mirrors, delay line controller of the right arm.
-M6        - Concave parabolic mirror, primary mirror of beam combiner.
-M7        - Convex hyperbolic mirror, secondary mirror of beam combiner.
-D0        - Pixel detector array.
-
-2. Structual models
-2.1 Left collector
-The left collector contains M00, M10 and M20.
-M20 has tip and tilt actuators.
-2.2 Right collector
-The right collector contains M01, M11 and M21.
-M21 also has tip and tilt actuators.
-2.3 Beam combiner
-The beam combiner contains M30, M31, M40, M41, M50, M51, M6, M7 and D0.
-M30 and M31 both have tip and tilt actuators.
-M40 and M50 are coupled and have a shared piston actuator.
-M41 and M51 are coupled and have a shared piston actuator.
-2.4 Degrees of freedom
-Each structure has 3 translational as well as 3 rotational degrees of freedom.
-
-3. Optical models
-3.1 Photon collecting telescopes
-M00 (M01) and M10 (M11) constitute the left (right) collecting telescope.
-3.2 Periscopes
-M20 (M21) and M30 (M31) constitute the left (right) periscope.
-3.3 Delay line controllers
-M40 (M41) and M50 (M51) constitute the left (right) delay line controller.
-3.4 Beam combining telescope
-M6 and M7 constitute the beam combining telescope.
-
-4. Coordinate systems
-4.1 Coordinate system of beam combiner as well as the whole interferometer
-origin: focus of primary mirror.
-z-axis: along principal optical axis of beam combining telescope, from D0 to M5.
-y-axis: along the interferometer baseline, from M30 to M31.
-4.2 Coordinate system of collector
-origin: focus of primary mirror.
-z-axis: along principal optical axis of beam compressor, from M10 (M11) to M20 (M21).
-x-axis: along beam reflected by M20 (M21).
-"""
+    
+    1. Overall model
+    
+          M10                                      M11
+     |    --   |                              |    --    |
+     |   /| \  |                              |   / |\   |
+     |  / ||---+------------- B --------------+----|| \  |
+     | /  |   \|          |-- B' --|          | /   |  \ |
+     ---- |  ---- M00            M7       M01 ----  |  ----
+          |            M50   ----   M51             |
+          |       M40 /---\  |  |  /---\M41         |
+          |           |   | /|  |\ |   |            |
+          |           |   |/ |  | \|   |            |
+          |           |   ---\  /---   |            |
+          \-----------/   M6  ||       \------------/
+         M20         M30      \/        M31         M21
+                              -- D0
+    
+    M00 (M01) - Concave parabolic mirror, primary mirror of left (right) collector.
+    M10 (M11) - Convex parabolic mirror, secondary mirror of left (right) collector.
+    M20 (M21) - Plane mirror, periscope mirror of left (right) collector.
+    M30, M31  - Plane mirrors, periscope mirrors of beam combiner.
+    M40, M50  - Plane mirrors, delay line controller of the left arm.
+    M41, M51  - Plane mirrors, delay line controller of the right arm.
+    M6        - Concave parabolic mirror, primary mirror of beam combiner.
+    M7        - Convex hyperbolic mirror, secondary mirror of beam combiner.
+    D0        - Pixel detector array.
+    
+    2. Structual models
+    2.1 Left collector
+    The left collector contains M00, M10 and M20.
+    M20 has tip and tilt actuators.
+    2.2 Right collector
+    The right collector contains M01, M11 and M21.
+    M21 also has tip and tilt actuators.
+    2.3 Beam combiner
+    The beam combiner contains M30, M31, M40, M41, M50, M51, M6, M7 and D0.
+    M30 and M31 both have tip and tilt actuators.
+    M40 and M50 are coupled and have a shared piston actuator.
+    M41 and M51 are coupled and have a shared piston actuator.
+    2.4 Degrees of freedom
+    Each structure has 3 translational as well as 3 rotational degrees of freedom.
+    
+    3. Optical models
+    3.1 Photon collecting telescopes
+    M00 (M01) and M10 (M11) constitute the left (right) collecting telescope.
+    3.2 Periscopes
+    M20 (M21) and M30 (M31) constitute the left (right) periscope.
+    3.3 Delay line controllers
+    M40 (M41) and M50 (M51) constitute the left (right) delay line controller.
+    3.4 Beam combining telescope
+    M6 and M7 constitute the beam combining telescope.
+    
+    4. Coordinate systems
+    4.1 Coordinate system of beam combiner as well as the whole interferometer
+    origin: focus of primary mirror.
+    z-axis: along principal optical axis of beam combining telescope, from D0 to M5.
+    y-axis: along the interferometer baseline, from M30 to M31.
+    4.2 Coordinate system of collector
+    origin: focus of primary mirror.
+    z-axis: along principal optical axis of beam compressor, from M10 (M11) to M20 (M21).
+    x-axis: along beam reflected by M20 (M21).
+    """
     def __init__(
             self,
             collector_d=2.,
@@ -1047,11 +1082,16 @@ x-axis: along beam reflected by M20 (M21).
             init_b=10.
     ):
         super(SIM, self).__init__()
+        # photon collectors
         pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
         pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
+        # combiner end periscope mirror
         m3_d = pc0.parts[-1].d_out
+        # primary mirror of combiner
         m6_d_out = combiner_b+m3_d+2.*np.tan(.5*optics_fov)*combiner_f
+        # beam waist diameter
         beam_d = m6_d_out / combiner_r
+        # secondary mirror of combiner
         m7_f = combiner_f / combiner_r
         m7_g = -0.5*detector_a/np.tan(.5*detector_fov*collector_r*combiner_r)
         m6_d_in = beam_d*m7_g/(m7_g-combiner_f+m7_f) + \
@@ -1068,20 +1108,54 @@ x-axis: along beam reflected by M20 (M21).
         m6  = SymmetricQuadricMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True)
         m7  = SymmetricQuadricMirror(0., m7_d, f=m7_f, g=m7_g, b=(0,1))
         d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m7_g-m7_f])
-        self.add_part(m30)
-        self.add_part(m31)
-        self.add_part(m40)
-        self.add_part(m41)
-        self.add_part(m50)
-        self.add_part(m51)
-        self.add_part(m6)
-        self.add_part(m7)
-        self.add_part(d0)
+        # periscope between combiner and collector 0
+        pr0 = OpticalAssembly()
+        # periscope between combiner and collector 1
+        pr1 = OpticalAssembly()
+        # delay line controller after periscope 0
+        dl0 = OpticalAssembly()
+        # delay line controller after periscope 1
+        dl1 = OpticalAssembly()
+        # left arm, including photon collector 0, periscope 0, and delay line controller 0.
+        arm0 = OpticalAssembly()
+        # right arm
+        arm1 = OpticalAssembly()
+        # beam combiner
+        bc  = OpticalAssembly()
+        pr0.add_part(pc0.parts[-1])
+        pr0.add_part(m30)
+        pr1.add_part(pc1.parts[-1])
+        pr1.add_part(m31)
+        dl0.add_part(m40)
+        dl0.add_part(m50)
+        dl1.add_part(m41)
+        dl1.add_part(m51)
+        bc.add_part(m30)
+        bc.add_part(m31)
+        bc.add_part(m6)
+        bc.add_part(m7)
+        bc.add_part(d0)
+        bc.join(dl0)
+        bc.join(dl1)
         pc0.move([-init_b*.5, 0., 0.])
         pc1.rotate([0., 0., 0., 1.])
         pc1.move([ init_b*.5, 0., 0.])
+        arm0.join(pc0)
+        arm0.join(pr0)
+        arm0.join(dl0)
+        arm1.join(pc1)
+        arm1.join(pr1)
+        arm1.join(dl1)
         self.join(pc0)
         self.join(pc1)
+        self.join(bc)
+        self.arms = [arm0, arm1]
+        self.collectors = [pc0, pc1]
+        self.periscopes = [pr0, pr1]
+        self.delaylines = [dl0, dl1]
+        self.combiner   = bc
+        # set base points of sub-assemblies.
+        # photon collector
         
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
