@@ -991,8 +991,10 @@ M00 (M01) - Concave parabolic mirror, primary mirror of left (right) collector.
 M10 (M11) - Convex parabolic mirror, secondary mirror of left (right) collector.
 M20 (M21) - Plane mirror, periscope mirror of left (right) collector.
 M30, M31  - Plane mirrors, periscope mirrors of beam combiner.
-M4        - Concave parabolic mirror, primary mirror of beam combiner.
-M5        - Convex hyperbolic mirror, secondary mirror of beam combiner.
+M40, M50  - Plane mirrors, delay line controller of the left arm.
+M41, M51  - Plane mirrors, delay line controller of the right arm.
+M6        - Concave parabolic mirror, primary mirror of beam combiner.
+M7        - Convex hyperbolic mirror, secondary mirror of beam combiner.
 D0        - Pixel detector array.
 
 2. Structual models
@@ -1003,8 +1005,10 @@ M20 has tip and tilt actuators.
 The right collector contains M01, M11 and M21.
 M21 also has tip and tilt actuators.
 2.3 Beam combiner
-The beam combiner contains M30, M31, M4, M5 and D0.
+The beam combiner contains M30, M31, M40, M41, M50, M51, M6, M7 and D0.
 M30 and M31 both have tip and tilt actuators.
+M40 and M50 are coupled and have a shared piston actuator.
+M41 and M51 are coupled and have a shared piston actuator.
 2.4 Degrees of freedom
 Each structure has 3 translational as well as 3 rotational degrees of freedom.
 
@@ -1013,8 +1017,10 @@ Each structure has 3 translational as well as 3 rotational degrees of freedom.
 M00 (M01) and M10 (M11) constitute the left (right) collecting telescope.
 3.2 Periscopes
 M20 (M21) and M30 (M31) constitute the left (right) periscope.
-3.3 Beam combining telescope
-M4 and M5 constitute the beam combining telescope.
+3.3 Delay line controllers
+M40 (M41) and M50 (M51) constitute the left (right) delay line controller.
+3.4 Beam combining telescope
+M6 and M7 constitute the beam combining telescope.
 
 4. Coordinate systems
 4.1 Coordinate system of beam combiner as well as the whole interferometer
