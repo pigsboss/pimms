@@ -1079,7 +1079,9 @@ class SIM(OpticalAssembly):
             detector_a=0.05,
             detector_n=128,
             detector_fov=np.deg2rad(3./60.),
-            init_b=10.
+            init_b=10.,
+            delayline_range=1.,
+            periscope_fov=np.deg2rad(5.)
     ):
         super(SIM, self).__init__()
         # photon collectors
@@ -1155,7 +1157,10 @@ class SIM(OpticalAssembly):
         self.delaylines = [dl0, dl1]
         self.combiner   = bc
         # set base points of sub-assemblies.
-        # photon collector
+        # delay line controllers
+        for dl in self.delaylines:
+            dl.p = .5*(dl.parts[0].p + dl.parts[1].p)
+        
         
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
