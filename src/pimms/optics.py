@@ -10,6 +10,7 @@ from pymath.common import norm
 import pymath.quaternion as quat
 from time import time
 from mayavi import mlab
+from matplotlib import rcParams
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
@@ -737,7 +738,6 @@ class OpticalAssembly(object):
         dq = quat.multiply(np.double(q).reshape((4,1)), quat.conjugate(self.q))
         self.rotate(dq)
 
-    @mlab.show
     def draw(
             self,
             nside=32,
@@ -754,14 +754,15 @@ class OpticalAssembly(object):
             highlight_opts={},
             surface_opts={},
             lightray_opts={},
-            axes_fontsize=12
+            axes_fontsize=12,
+            output=None
     ):
         """Draw triangular surface of all mirrors.
 
         Arguments:
         nside              - nside of healpix sampling points for each mirror.
         axes               - matplotlib.axes3D object.
-        figure_size        - figure size, by (width, height), in pixels (mayavi) or inches (matplotlib).
+        figure_size        - figure size, by (width, height), in pixels.
         visualizer         - 3D visualizer, mayavi (default) or matplotlib (fallback).
         return_only        - instead of plotting the surface, return the triangles only (boolean switch).
         draw_virtual       - draw virtual mirrors (boolean switch).
@@ -776,6 +777,7 @@ class OpticalAssembly(object):
         surface_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for ordinary surfaces.
         lightray_opts      - plot (or mayavi.mlab.plot3d) keyword options for light rays.
         axes_fontsize      - font size for axes, such as labels.
+        output             - figure output. Default: None, i.e., immediately shows on screen.
         """
         trigs = []
         Zs    = []
@@ -805,10 +807,12 @@ class OpticalAssembly(object):
                   'z':(zmin, zmax)}
         colors = {
             'virtual'  :(.776, .886, .999),
-            'highlight':(.769, .153, .153),
+            'highlight':(.745, .062, .075),
             'lightray' :(.000, .500, .000),
             'surface'  :(.999, .859, .000)
         }
+        if figure_size is None:
+            figure_size = (1200, 1200)
         if not return_only:
             if visualizer.lower().startswith('maya'):
                 if len(virtual_opts)==0:
@@ -836,15 +840,21 @@ class OpticalAssembly(object):
                         'color': colors['surface'],
                         'resolution': 8
                     }
+                if output is None:
+                    mlab.options.offscreen = False
+                else:
+                    mlab.options.offscreen = True
                 fig = mlab.figure(bgcolor=(1., 1., 1.), size=(1024, 1024))
                 mlab.view(azimuth=view_angles[1], elevation=90.+view_angles[0])
                 for i in range(len(self.parts)):
                     if self.parts[i].is_virtual:
                         if draw_virtual:
                             mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **virtual_opts)
+                            mobj.actor.property.lighting = False
                         continue
                     if (i in highlight_list) or (highlight_primary and self.parts[i].is_primary):
                         mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **highlight_opts)
+                        mobj.actor.property.lighting = False
                         continue
                     mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **surface_opts)
                 if raytrace is not None:
@@ -856,10 +866,15 @@ class OpticalAssembly(object):
                             raytrace['position'][:,i,2],
                             **lightray_opts
                         )
+                        mobj.actor.property.lighting = False
+                if output is None:
+                    mlab.show()
+                else:
+                    mlab.savefig(output, magnification=2)
             elif visualizer.lower().startswith('mat'):
                 if len(virtual_opts)==0:
                     virtual_opts={
-                        'alpha': 0.6,
+                        'alpha': 0.5,
                         'color': colors['virtual'],
                         'linestyle': 'None'
                     }
@@ -872,7 +887,7 @@ class OpticalAssembly(object):
                 if len(lightray_opts)==0:
                     lightray_opts={
                         'alpha':     0.5,
-                        'linewidth': 0.1,
+                        'linewidth': 0.05,
                         'color':     colors['lightray']
                     }
                 if len(surface_opts)==0:
@@ -882,7 +897,7 @@ class OpticalAssembly(object):
                         'linestyle': 'None'
                     }
                 if axes is None:
-                    fig = plt.figure(figsize=figure_size)
+                    fig = plt.figure(figsize=(figure_size[0]/rcParams['figure.dpi'], figure_size[1]/rcParams['figure.dpi']))
                     axes = fig.add_subplot(111, projection='3d')
                 axes.view_init(*view_angles)
                 for i in range(len(self.parts)):
@@ -903,15 +918,19 @@ class OpticalAssembly(object):
                             raytrace['position'][:,i,2],
                             **lightray_opts
                         )
-                axes.set_xlim(xc-.6*sz, xc+.6*sz)
-                axes.set_ylim(yc-.6*sz, yc+.6*sz)
-                axes.set_zlim(zc-.6*sz, zc+.6*sz)
+                axes.set_xlim(xc-.5*sz, xc+.5*sz)
+                axes.set_ylim(yc-.5*sz, yc+.5*sz)
+                axes.set_zlim(zc-.5*sz, zc+.5*sz)
                 axes.set_xlabel('x, in meters', fontsize=axes_fontsize)
                 axes.set_ylabel('y, in meters', fontsize=axes_fontsize)
                 axes.set_zlabel('z, in meters', fontsize=axes_fontsize)
                 plt.axis('off')
                 plt.tight_layout()
-                plt.show()
+                if output is None:
+                    plt.show()
+                else:
+                    plt.savefig(output, dpi=rcParams['figure.dpi']*2)
+                    plt.close()
         return trigs, Zs, extent
     
     def intersect(self, photon_in):
@@ -1140,7 +1159,7 @@ class SIM(OpticalAssembly):
             combiner_r=5.,
             combiner_f=5.,
             optics_fov=np.deg2rad(10./60.),
-            detector_a=0.10,
+            detector_a=0.15,
             detector_n=128,
             detector_fov=np.deg2rad(3./60.),
             init_b=10.,
