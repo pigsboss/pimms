@@ -184,7 +184,7 @@ class LightSource(object):
         sp_start['wavelength'][:] = self.wavelength
         sp_stop['wavelength'][:] = self.wavelength
         return sp_start[~miss_all], sp_stop[~miss_all]
-            
+
 class SymmetricQuadricMirror(object):
     """Symmetric quadric mirror model.
 
