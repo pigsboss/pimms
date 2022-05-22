@@ -9,6 +9,7 @@ import copy
 from pymath.common import norm
 import pymath.quaternion as quat
 from time import time
+from mayavi import mlab
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
@@ -735,11 +736,14 @@ class OpticalAssembly(object):
         """
         dq = quat.multiply(np.double(q).reshape((4,1)), quat.conjugate(self.q))
         self.rotate(dq)
-        
+
+    @mlab.show
     def draw(
             self,
             nside=32,
             axes=None,
+            figure_size=None,
+            visualizer='mayavi',
             return_only=False,
             draw_virtual=True,
             highlight_primary=True,
@@ -756,16 +760,21 @@ class OpticalAssembly(object):
 
         Arguments:
         nside              - nside of healpix sampling points for each mirror.
-        axes               - matplotlib axes object.
+        axes               - matplotlib.axes3D object.
+        figure_size        - figure size, by (width, height), in pixels (mayavi) or inches (matplotlib).
+        visualizer         - 3D visualizer, mayavi (default) or matplotlib (fallback).
         return_only        - instead of plotting the surface, return the triangles only (boolean switch).
         draw_virtual       - draw virtual mirrors (boolean switch).
         highlight_primary  - highlight primary mirrors (boolean switch).
         highlight_list     - list of indices of highlight mirrors.
         raytrace           - plot ray trace (optional).
-        virtual_opts       - plot_trisurf keyword options for virtual surfaces, e.g., entrance pupil.
-        highlight_opts     - plot_trisurf keyword options for highlighted surfaces, e.g., primary mirror.
-        surface_opts       - plot_trisurf keyword options for ordinary surfaces.
-        lightray_opts      - plot keyword options for light rays.
+        view_angles        - view angles, by (elevation, azimuth), in degrees.
+                             elevation is the angle between line of sight and xy plane.
+                             azimuth is the angle between line of sight and xz plane.
+        virtual_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for virtual surfaces, e.g., entrance pupil.
+        highlight_opts     - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for highlighted surfaces, e.g., primary mirror.
+        surface_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for ordinary surfaces.
+        lightray_opts      - plot (or mayavi.mlab.plot3d) keyword options for light rays.
         axes_fontsize      - font size for axes, such as labels.
         """
         trigs = []
@@ -794,60 +803,115 @@ class OpticalAssembly(object):
         extent = {'x':(xmin, xmax),
                   'y':(ymin, ymax),
                   'z':(zmin, zmax)}
+        colors = {
+            'virtual'  :(.776, .886, .999),
+            'highlight':(.769, .153, .153),
+            'lightray' :(.000, .500, .000),
+            'surface'  :(.999, .859, .000)
+        }
         if not return_only:
-            if len(virtual_opts)==0:
-                virtual_opts={
-                    'alpha': 0.6,
-                    'color': 'lightcyan',
-                    'linestyle': 'None'
-                }
-            if len(highlight_opts)==0:
-                highlight_opts={
-                    'alpha': 1.0,
-                    'color': 'red',
-                    'linestyle': 'None'
-                }
-            if len(lightray_opts)==0:
-                lightray_opts={
-                    'alpha':     0.5,
-                    'linewidth': 0.1,
-                    'color':     'green'
-                }
-            if len(surface_opts)==0:
-                surface_opts={
-                    'alpha': 1.0,
-                    'color': 'darkgoldenrod',
-                    'linestyle': 'None'
-                }
-            if axes is None:
-                fig = plt.figure()
-                axes = fig.add_subplot(111, projection='3d')
-            axes.view_init(*view_angles)
-            for i in range(len(self.parts)):
-                if self.parts[i].is_virtual:
-                    if draw_virtual:
-                        axes.plot_trisurf(trigs[i], Zs[i], **virtual_opts)
-                    continue
-                if (i in highlight_list) or (highlight_primary and self.parts[i].is_primary):
-                    axes.plot_trisurf(trigs[i], Zs[i], **highlight_opts)
-                    continue
-                axes.plot_trisurf(trigs[i], Zs[i], **surface_opts)
-            if raytrace is not None:
-                nodes, npts = raytrace.shape
-                for i in range(npts):
-                    axes.plot(
-                        raytrace['position'][:,i,0],
-                        raytrace['position'][:,i,1],
-                        raytrace['position'][:,i,2],
-                        **lightray_opts
-                    )
-            axes.set_xlim(xc-.6*sz, xc+.6*sz)
-            axes.set_ylim(yc-.6*sz, yc+.6*sz)
-            axes.set_zlim(zc-.6*sz, zc+.6*sz)
-            axes.set_xlabel('x, in meters', fontsize=axes_fontsize)
-            axes.set_ylabel('y, in meters', fontsize=axes_fontsize)
-            axes.set_zlabel('z, in meters', fontsize=axes_fontsize)
-            plt.show()
+            if visualizer.lower().startswith('maya'):
+                if len(virtual_opts)==0:
+                    virtual_opts={
+                        'opacity': 0.3,
+                        'color': colors['virtual'],
+                        'resolution': 8
+                    }
+                if len(highlight_opts)==0:
+                    highlight_opts={
+                        'opacity': 1.0,
+                        'color': colors['highlight'],
+                        'resolution': 8
+                    }
+                if len(lightray_opts)==0:
+                    lightray_opts={
+                        'opacity':    0.05,
+                        'line_width': 0.01,
+                        'color':     colors['lightray'],
+                        'representation':'surface'
+                    }
+                if len(surface_opts)==0:
+                    surface_opts={
+                        'opacity': 1.0,
+                        'color': colors['surface'],
+                        'resolution': 8
+                    }
+                fig = mlab.figure(bgcolor=(1., 1., 1.), size=(1024, 1024))
+                mlab.view(azimuth=view_angles[1], elevation=90.+view_angles[0])
+                for i in range(len(self.parts)):
+                    if self.parts[i].is_virtual:
+                        if draw_virtual:
+                            mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **virtual_opts)
+                        continue
+                    if (i in highlight_list) or (highlight_primary and self.parts[i].is_primary):
+                        mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **highlight_opts)
+                        continue
+                    mobj = mlab.triangular_mesh(trigs[i].x, trigs[i].y, Zs[i], trigs[i].triangles[~trigs[i].mask], **surface_opts)
+                if raytrace is not None:
+                    nodes, npts = raytrace.shape
+                    for i in range(npts):
+                        mobj = mlab.plot3d(
+                            raytrace['position'][:,i,0],
+                            raytrace['position'][:,i,1],
+                            raytrace['position'][:,i,2],
+                            **lightray_opts
+                        )
+            elif visualizer.lower().startswith('mat'):
+                if len(virtual_opts)==0:
+                    virtual_opts={
+                        'alpha': 0.6,
+                        'color': colors['virtual'],
+                        'linestyle': 'None'
+                    }
+                if len(highlight_opts)==0:
+                    highlight_opts={
+                        'alpha': 1.0,
+                        'color': colors['highlight'],
+                        'linestyle': 'None'
+                    }
+                if len(lightray_opts)==0:
+                    lightray_opts={
+                        'alpha':     0.5,
+                        'linewidth': 0.1,
+                        'color':     colors['lightray']
+                    }
+                if len(surface_opts)==0:
+                    surface_opts={
+                        'alpha': 1.0,
+                        'color': colors['surface'],
+                        'linestyle': 'None'
+                    }
+                if axes is None:
+                    fig = plt.figure(figsize=figure_size)
+                    axes = fig.add_subplot(111, projection='3d')
+                axes.view_init(*view_angles)
+                for i in range(len(self.parts)):
+                    if self.parts[i].is_virtual:
+                        if draw_virtual:
+                            mobj = axes.plot_trisurf(trigs[i], Zs[i], **virtual_opts)
+                        continue
+                    if (i in highlight_list) or (highlight_primary and self.parts[i].is_primary):
+                        mobj = axes.plot_trisurf(trigs[i], Zs[i], **highlight_opts)
+                        continue
+                    mobj = axes.plot_trisurf(trigs[i], Zs[i], **surface_opts)
+                if raytrace is not None:
+                    nodes, npts = raytrace.shape
+                    for i in range(npts):
+                        mobj = axes.plot(
+                            raytrace['position'][:,i,0],
+                            raytrace['position'][:,i,1],
+                            raytrace['position'][:,i,2],
+                            **lightray_opts
+                        )
+                axes.set_xlim(xc-.6*sz, xc+.6*sz)
+                axes.set_ylim(yc-.6*sz, yc+.6*sz)
+                axes.set_zlim(zc-.6*sz, zc+.6*sz)
+                axes.set_xlabel('x, in meters', fontsize=axes_fontsize)
+                axes.set_ylabel('y, in meters', fontsize=axes_fontsize)
+                axes.set_zlabel('z, in meters', fontsize=axes_fontsize)
+                plt.axis('off')
+                plt.tight_layout()
+                plt.show()
         return trigs, Zs, extent
     
     def intersect(self, photon_in):
@@ -1076,7 +1140,7 @@ class SIM(OpticalAssembly):
             combiner_r=5.,
             combiner_f=5.,
             optics_fov=np.deg2rad(10./60.),
-            detector_a=0.05,
+            detector_a=0.10,
             detector_n=128,
             detector_fov=np.deg2rad(3./60.),
             init_b=10.,
