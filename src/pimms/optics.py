@@ -45,6 +45,7 @@ class LightSource(object):
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
         self.direction  = np.double([np.sin(self.theta)*np.cos(self.phi), np.sin(self.theta)*np.sin(self.phi), np.cos(self.theta)]) # unit vector from the origin to the source
+        self.num_crosshairs = 8
     def __call__(self, list_of_apertures, num_super_photons, dt, sampling='dizzle'):
         """Shed super photons onto mirrors.
 
@@ -93,8 +94,7 @@ class LightSource(object):
             u = []
             for aperture in list_of_apertures:
                 if sampling.lower()=='random':
-                    rho = .5*(((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+
-                               aperture.d_in**2.)**.5)
+                    rho = (((aperture.d_out**2.-aperture.d_in**2.)*np.random.rand(num_super_photons)+aperture.d_in**2.)**.5)/2.
                     phi = 2.*np.pi*np.random.rand(num_super_photons)
                 elif sampling.lower()=='uniform':
                     N = int((num_super_photons/np.pi/(aperture.d_out**2.-aperture.d_in**2.)*4.*aperture.d_out**2.)**.5)
@@ -116,6 +116,13 @@ class LightSource(object):
                     sel = (rho>=aperture.d_in*.5) & (rho<=aperture.d_out*.5)
                     rho = rho[sel]
                     phi = phi[sel]
+                elif sampling.lower()=='crosshair':
+                    xgv = np.arange(num_super_photons) / num_super_photons # fine grids
+                    ygv = (np.arange(self.num_crosshairs)+.5) / self.num_crosshairs # coarse grids
+                    x,y = np.meshgrid(xgv,ygv)
+                    rho = (((aperture.d_out**2.-aperture.d_in**2.)*np.concatenate((x.ravel(), y.ravel()))+aperture.d_in**2.)**.5)/2.
+                    phi = 2.*np.pi*np.concatenate((y.ravel(), x.ravel()))
+                
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
                 t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
@@ -142,17 +149,47 @@ class LightSource(object):
                     R = np.linalg.norm(p - aperture.p.ravel())
                     r = aperture.d_out*.5
                     norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
+                    # alpha is the angle between norm vector of aperture and chief ray from the source
+                    # chief ray is the ray that passes the center of the aperture
                     sin_alpha = np.linalg.norm(np.cross(self.direction, norm_aperture, axis=0))
+                    # beta is the upper limit of the angle between chief ray and the marginal ray
+                    # marginal ray is the ray that passes the edge of the aperture
                     if sin_alpha >= (r/R):
                         beta = np.arccos(((R**2.-r**2.)**.5) / R)
                     else:
                         beta = np.arccos((R-r*sin_alpha) / (R**2.+r**2.-2.*R*r*sin_alpha)**.5)
-                    rho = R*((1.-(1.-np.cos(beta))*np.random.rand(num_super_photons))**-2. - 1.)**.5
-                    phi = 2.*np.pi*np.random.rand(num_super_photons)
+                    if sampling.lower()=='random':
+                        rho = R*((1.-(1.-np.cos(beta))*np.random.rand(num_super_photons))**-2. - 1.)**.5
+                        phi = 2.*np.pi*np.random.rand(num_super_photons)
+                        xs  = rho*np.cos(phi)
+                        ys  = rho*np.sin(phi)
+                    elif sampling.lower()=='uniform':
+                        nside = 2**int(np.log2((num_super_photons/6./(1.-np.cos(beta)))**.5))
+                        npix_stop = hp.ang2pix(nside, beta, 0.)
+                        npix_half = hp.ang2pix(nside, beta, np.pi)
+                        npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
+                        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_stop)))*R
+                    elif sampling.lower()=='dizzle':
+                        nside = 2**int(np.log2((num_super_photons/6./(1.-np.cos(beta)))**.5))
+                        npix_stop = hp.ang2pix(nside, beta, 0.)
+                        npix_half = hp.ang2pix(nside, beta, np.pi)
+                        npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
+                        xs,ys,zs  = np.double(hp.pix2vec(nside, range(npix_stop)))*R
+                        dizzle_axis = quat.ptr2xyz(np.pi*2.*np.random.rand(1), 0., 1.)
+                        dizzle_dist = np.random.rand(1)*hp.nside2resol(nside)/2.
+                        dizzle_quat = np.double([
+                            np.cos(dizzle_dist/2.),
+                            np.sin(dizzle_dist/2.)*dizzle_axis[0],
+                            np.sin(dizzle_dist/2.)*dizzle_axis[1],
+                            np.sin(dizzle_dist/2.)*dizzle_axis[2]])
+                        xs,ys,zs  = quat.rotate(dizzle_quat, [xs,ys,zs])
+                    elif sampling.lower()=='crosshair':
+                        pass
+                    
                     s = quat.rotate(quat.from_angles(*(quat.xyz2ptr(
                         aperture.p[0]-p[0],
                         aperture.p[1]-p[1],
-                        aperture.p[2]-p[2])[:2])),[R, rho*np.cos(phi), rho*np.sin(phi)])
+                        aperture.p[2]-p[2])[:2])), [R,xs,ys])
                     u.append(s)
                     area += 2.*np.pi*(1.-np.cos(beta))*(self.rho**2.)
                 u = np.concatenate(u, axis=1)
@@ -160,8 +197,29 @@ class LightSource(object):
                 sp_start['weight']    = self.intensity*dt*area/self.energy/u.shape[1]
                 sp_start['direction'] = quat.direction(u).transpose()
             else:
-                theta = np.arccos(1.-2.*np.random.rand(num_super_photons))
-                phi   = 2.*np.pi*np.random.rand(num_super_photons)
+                if sampling.lower()=='random':
+                    theta = np.arccos(1.-2.*np.random.rand(num_super_photons))
+                    phi   = 2.*np.pi*np.random.rand(num_super_photons)
+                elif sampling.lower()=='uniform':
+                    nside = 2**int(np.log2((num_super_photons/12.)**.5))
+                    npix  = hp.nside2npix(nside)
+                    theta, phi = hp.pix2ang(nside, range(npix))
+                elif sampling.lower()=='dizzle':
+                    nside = 2**int(np.log2((num_super_photons/12.)**.5))
+                    npix  = hp.nside2npix(nside)
+                    theta, phi = hp.pix2ang(nside, range(npix))
+                    dizzle_axis = quat.ptr2xyz(np.pi*2.*np.random.rand(1), 0., 1.)
+                    dizzle_dist = np.random.rand(1)*hp.nside2resol(nside)/2.
+                    dizzle_quat = np.double([
+                        np.cos(dizzle_dist/2.),
+                        np.sin(dizzle_dist/2.)*dizzle_axis[0],
+                        np.sin(dizzle_dist/2.)*dizzle_axis[1],
+                        np.sin(dizzle_dist/2.)*dizzle_axis[2]])
+                    xs,ys,zs  = quat.rotate(dizzle_quat, np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)))
+                    theta, phi  = quat.xyz2ptr(xs, ys, zs)
+                    theta = np.pi/2.-theta
+                elif sampling.lower()=='crosshair':
+                    pass
                 sp_start = np.zeros((num_super_photons,), dtype=sptype)
                 sp_start['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
                 sp_start['direction'] = np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
@@ -359,7 +417,9 @@ class SymmetricQuadricMirror(object):
         # n is number of pixels (ring scheme) and N is number of all pixels.
         # n=N/12, so cos(theta)=5/6 and sin(theta)=(11/36)^0.5=0.5527708
         theta_out = np.arcsin(.5527708)
-        npix_stop = hp.ang2pix(nside, theta_out, np.pi*2.)
+        npix_stop = hp.ang2pix(nside, theta_out, 0.)
+        npix_half = hp.ang2pix(nside, theta_out, np.pi)
+        npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
         xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_stop)))*self.d_out
         rs = (xs**2.+ys**2.)**.5
         if np.isinf(self.f):
