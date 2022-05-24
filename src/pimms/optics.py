@@ -8,6 +8,7 @@ import healpy as hp
 import copy
 from pymath.common import norm
 import pymath.quaternion as quat
+import pymath.linsolvers as lins
 from time import time
 from mayavi import mlab
 from matplotlib import rcParams
@@ -772,7 +773,7 @@ class OpticalAssembly(object):
         view_angles        - view angles, by (elevation, azimuth), in degrees.
                              elevation is the angle between line of sight and xy plane.
                              azimuth is the angle between line of sight and xz plane.
-        virtual_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for virtual surfaces, e.g., entrance pupil.
+        virtual_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for virtual surfaces, e.g., entrance aperture.
         highlight_opts     - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for highlighted surfaces, e.g., primary mirror.
         surface_opts       - plot_trisurf (or mayavi.mlab.triangle_surf) keyword options for ordinary surfaces.
         lightray_opts      - plot (or mayavi.mlab.plot3d) keyword options for light rays.
@@ -991,6 +992,24 @@ class OpticalAssembly(object):
                     toc = time()-tic
                     print('computing outcomes: {:f} seconds'.format(toc))
         return photon_trace, mirror_sequence
+
+    def aperture_stop(self, source):
+        pass
+
+    def entrance_pupil(self):
+        pass
+    
+    def exit_pupil(self):
+        pass
+
+    def field_stop(self):
+        pass
+    
+    def entrance_window(self):
+        pass
+
+    def exit_window(self):
+        pass
 
 class Detector(SymmetricQuadricMirror):
     """Pixel-array photon detector model.
