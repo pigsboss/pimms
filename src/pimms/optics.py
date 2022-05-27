@@ -1,17 +1,18 @@
 """Optical system modelling and analysis functions.
 """
 import numpy as np
+import networkx as nx
 import numexpr as ne
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import healpy as hp
 import copy
-from pymath.common import norm
 import pymath.quaternion as quat
 import pymath.linsolvers as lins
 from time import time
 from mayavi import mlab
 from matplotlib import rcParams
+from pymath.common import norm
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
 dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
@@ -122,7 +123,6 @@ class LightSource(object):
                     x,y = np.meshgrid(xgv,ygv)
                     rho = (((aperture.d_out**2.-aperture.d_in**2.)*np.concatenate((x.ravel(), y.ravel()))+aperture.d_in**2.)**.5)/2.
                     phi = 2.*np.pi*np.concatenate((y.ravel(), x.ravel()))
-                
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
                 t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
@@ -184,8 +184,13 @@ class LightSource(object):
                             np.sin(dizzle_dist/2.)*dizzle_axis[2]])
                         xs,ys,zs  = quat.rotate(dizzle_quat, [xs,ys,zs])
                     elif sampling.lower()=='crosshair':
-                        pass
-                    
+                        xgv = np.arange(num_super_photons) / num_super_photons # fine grids
+                        ygv = (np.arange(self.num_crosshairs)+.5) / self.num_crosshairs # coarse grids
+                        x,y = np.meshgrid(xgv,ygv)
+                        rho = R*((1.-(1.-np.cos(beta))*np.concatenate((x.ravel(),y.ravel())))**-2. - 1.)**.5
+                        phi = 2.*np.pi*np.concatenate((y.ravel(),x.ravel()))
+                        xs  = rho*np.cos(phi)
+                        ys  = rho*np.sin(phi)
                     s = quat.rotate(quat.from_angles(*(quat.xyz2ptr(
                         aperture.p[0]-p[0],
                         aperture.p[1]-p[1],
@@ -200,7 +205,7 @@ class LightSource(object):
                 if sampling.lower()=='random':
                     theta = np.arccos(1.-2.*np.random.rand(num_super_photons))
                     phi   = 2.*np.pi*np.random.rand(num_super_photons)
-                elif sampling.lower()=='uniform':
+                elif sampling.lower() in ['crosshair', 'uniform']:
                     nside = 2**int(np.log2((num_super_photons/12.)**.5))
                     npix  = hp.nside2npix(nside)
                     theta, phi = hp.pix2ang(nside, range(npix))
@@ -218,8 +223,6 @@ class LightSource(object):
                     xs,ys,zs  = quat.rotate(dizzle_quat, np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)))
                     theta, phi  = quat.xyz2ptr(xs, ys, zs)
                     theta = np.pi/2.-theta
-                elif sampling.lower()=='crosshair':
-                    pass
                 sp_start = np.zeros((num_super_photons,), dtype=sptype)
                 sp_start['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
                 sp_start['direction'] = np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
@@ -328,7 +331,7 @@ class SymmetricQuadricMirror(object):
                 p is position of the mirror in lab csys and q is the attitude quaternion.
         name  - human readable name assigned to the mirror.
         is_primary, is_virtual, is_entrance and is_detector are reserved switches for
-        OpticalAssembly object.
+        OpticalSystem object.
         """
         self.d_in     = d_in
         self.d_out    = d_out
@@ -688,20 +691,20 @@ class SymmetricQuadricMirror(object):
         photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*dm, 2.*np.pi)
         return photon_out
 
-class OpticalAssembly(object):
-    """Assembly of optical parts.
+class OpticalSystem(object):
+    """Optical system.
     """
     def __init__(self, p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
-        """Create empty optical assembly.
+        """Create empty optical system.
 
         Arguments:
         p    - position in lab coordinate system.
         q    - attitude quaternion in lab coordinate system.
-        name - human readable name assigned to the assembly.
+        name - human readable name assigned to the system.
 
         Example:
         r' = qrq' + p,
-        where r is vector in assembly fixed csys and r' is vector in lab csys.
+        where r is vector in system fixed csys and r' is vector in lab csys.
         """
         self.p = np.double(p).reshape((3,1))
         self.q = np.double(q).reshape((4,1))
@@ -754,20 +757,20 @@ class OpticalAssembly(object):
         return parts
     
     def add_part(self, part):
-        """Append SymmetricQuadricMirror object to the current assembly.
+        """Append SymmetricQuadricMirror object to the current system.
         """
         self.parts.append(part)
 
-    def join(self, guest_assembly):
-        """Join all parts of an existing guest OpticalAssembly object to the
+    def join(self, guest_system):
+        """Join all parts of an existing guest OpticalSystem object to the
         current object (host).
         """
-        for part in guest_assembly.parts:
+        for part in guest_system.parts:
             if part not in self.parts:
                 self.add_part(part)
     
     def move(self, dp):
-        """Move assembly in lab csys by displacement vector dp.
+        """Move system in lab csys by displacement vector dp.
 
         new position: p' = p + dp
         """
@@ -777,7 +780,7 @@ class OpticalAssembly(object):
         return self.p
     
     def rotate(self, dq):
-        """Rotate assembly around its fixed csys origin by dq.
+        """Rotate system around its fixed csys origin by dq.
 
         new attitude: q' = dq q dq'
         """
@@ -804,13 +807,13 @@ class OpticalAssembly(object):
             nside=32,
             axes=None,
             figure_size=None,
-            visualizer='mayavi',
+            visualizer='matplotlib',
             return_only=False,
             draw_virtual=True,
             highlight_primary=True,
             highlight_list=[],
             raytrace=None,
-            view_angles=(0,0),
+            view_angles=(0., -90.),
             virtual_opts={},
             highlight_opts={},
             surface_opts={},
@@ -1019,42 +1022,54 @@ class OpticalAssembly(object):
             k[:] = np.where(m,  i, k)
         return n, t, k
 
-    def trace(self, photon_in, steps=1, profiling=False):
-        """Trace photons in optical assembly.
+    def trace(self, photon_in, max_steps=100, profiling=False):
+        """Trace photons in optical system.
 
         Arguments:
         photon_in  - input photons
-        steps      - number of ray-tracing steps
+        max_steps  - maximum number of ray-tracing steps
 
         Returns:
         photon_trace - photon trace at each step
         """
-        photon_trace = np.empty((steps+1, photon_in.size), dtype=sptype)
-        mirror_sequence = np.empty((steps+1, photon_in.size), dtype=mstype)
-        photon_trace[0, :] = photon_in[:]
-        mirror_sequence[0, :] = -1
-        for i in range(steps):
+        photon_trace = []
+        mirror_sequence = []
+        msbuf = np.empty((photon_in.size,), dtype=mstype)
+        spbuf = np.copy(photon_in)
+        msbuf[:] = -1
+        photon_trace.append(np.copy(spbuf))
+        mirror_sequence.append(np.copy(msbuf))
+        i = 0
+        while i < max_steps:
             tic = time()
-            n,t,k = self.intersect(photon_trace[i, :])
+            n,t,k = self.intersect(photon_trace[i])
             if profiling:
                 toc = time()-tic
                 print('computing intersection: {:f} seconds'.format(toc))
-            mirror_sequence[i+1, :] = k
+            msbuf[:] = k
+            mirror_sequence.append(np.copy(msbuf))
             m = np.isinf(t)
-            photon_trace[i+1, m] = photon_trace[i, m]
-            hits = np.bincount(k[~m],minlength=len(self.parts))
+            spbuf[m] = photon_trace[i][m]
+            if np.allclose(msbuf, -1):
+                break
+            hits = np.bincount(k[~m], minlength=len(self.parts))
             for l in range(len(self.parts)):
                 tic = time()
                 if hits[l]>0:
                     m = np.bool_(k==l)
-                    photon_trace[i+1, m] = self.parts[l].encounter(photon_trace[i, m], n[:, m])
+                    spbuf[m] = self.parts[l].encounter(photon_trace[i][m], n[:, m])
                 if profiling:
                     toc = time()-tic
                     print('computing outcomes: {:f} seconds'.format(toc))
-        return photon_trace, mirror_sequence
+            photon_trace.append(np.copy(spbuf))
+            i += 1
+        return np.concatenate(photon_trace).reshape((-1,photon_in.size)), np.concatenate(mirror_sequence).reshape((-1,photon_in.size))
 
-    def aperture_stop(self, source):
-        pass
+    def aperture_stop(self, network):
+        """Find aperture stop of the optical system provided the optical path network.
+        
+        """
+        
 
     def entrance_pupil(self):
         pass
@@ -1071,10 +1086,77 @@ class OpticalAssembly(object):
     def exit_window(self):
         pass
 
+class OpticalPathNetwork(nx.classes.digraph.DiGraph):
+    def __init__(
+            self,
+            optical_system,
+            light_source=LightSource(location=(0., 0., np.inf)),
+            trace=None,
+            sequence=None,
+            title='',
+            description=''):
+        """Build optical path network that the light travels from light source in
+        the system. The underlying object for the optical path network is directed
+        graph implemented with NetworkX.
+
+        The optical path network consists of nodes (optical parts) and edges (optical paths). 
+
+        Arguments:
+        optical_system - underlying physical entity of the optical path network
+        light_source   - reference light source
+        trace          - light ray trace
+                         each trace is tracked by a series of snapshots of the super photon
+                         as it encounters a PART of the optical system.
+        sequence       - sequence of indices of optical parts corresponds to the light ray
+                         trace.
+        title          - title of the network.
+        description    - additional comments on the network.
+        """
+        if (trace is None) or (sequence is None):
+            # trace light rays from given light source
+            p, q = light_source(optical_system.get_entrance(), 100, 1, sampling='random')
+            trace, sequence = optical_system.trace(q)
+        super(OpticalPathNetwork, self).__init__(
+            light_source=light_source,
+            optical_system=optical_system,
+            title=title,
+            description=description)
+        nvtx, npts = sequence.shape
+        for p in optical_system.parts:
+            if not p.is_virtual:
+                self.add_node(p)
+        for i in range(1, nvtx-1):
+            # encode (from_part_index, to_part_index)
+            m = (np.isclose(sequence[i], -1) | np.isclose(sequence[i+1], -1))
+            edge_codes = np.unique(sequence[i,~m]*len(optical_system.parts)+sequence[i+1,~m])
+            for ec in edge_codes:
+                to_idx = np.mod(ec, len(optical_system.parts))
+                from_idx = (ec-to_idx)//len(optical_system.parts)
+                if not (optical_system.parts[to_idx].is_virtual or optical_system.parts[from_idx].is_virtual):
+                    self.add_edge(optical_system.parts[from_idx], optical_system.parts[to_idx])
+
+    def draw(self, pos=None, output=None, **kwargs):
+        """Draw optical path network.
+
+        pos      - position of nodes
+        output   - output of figure (default: None, to print on the screen)
+        **kwargs - keyword options to pass to networkx.draw()
+        """
+        if pos is None:
+            pos = nx.spring_layout(self, pos=nx.spectral_layout(self))
+        nx.draw(self, pos=pos, **kwargs)
+        nx.draw_networkx_labels(self, pos, {node:node.name for node in self.nodes})
+        plt.tight_layout()
+        if output is None:
+            plt.show()
+        else:
+            plt.savefig(output)
+            plt.close()
+            
 class Detector(SymmetricQuadricMirror):
     """Pixel-array photon detector model.
     Geometrically a detector is a innerscribed square of an aperture of a given
-    optical assembly. The aperture where the detector is installed is called its
+    optical system. The aperture where the detector is installed is called its
     circumcircle aperture. The effective area of the detector is its incirle
     aperture.
     """
@@ -1140,11 +1222,11 @@ class Detector(SymmetricQuadricMirror):
             self.photon_buffer = np.empty((0,), dtype=sptype)
         return amp, pha
     
-class CassegrainReflector(OpticalAssembly):
+class CassegrainReflector(OpticalSystem):
     def __init__(self):
         pass
     
-class PhotonCollector(OpticalAssembly):
+class PhotonCollector(OpticalSystem):
     def __init__(self, d=2., f=4., r=10., fov=np.deg2rad(5./60.)):
         super(PhotonCollector, self).__init__()
         primary_f      = f
@@ -1164,7 +1246,7 @@ class PhotonCollector(OpticalAssembly):
         self.add_part(m1)
         self.add_part(m2)
 
-class SIM(OpticalAssembly):
+class SIM(OpticalSystem):
     """Simplified Michelson stellar interferometer model.
     
     1. Overall model
@@ -1249,6 +1331,14 @@ class SIM(OpticalAssembly):
         # photon collectors
         pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
         pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
+        pc0.parts[0].name='Entrance 0'
+        pc0.parts[1].name='M00'
+        pc0.parts[2].name='M10'
+        pc0.parts[3].name='M20'
+        pc1.parts[0].name='Entrance 1'
+        pc1.parts[1].name='M01'
+        pc1.parts[2].name='M11'
+        pc1.parts[3].name='M21'
         # combiner end periscope mirror
         m3_d = pc0.parts[-1].d_out
         # primary mirror of combiner
@@ -1263,29 +1353,29 @@ class SIM(OpticalAssembly):
         m7_d = max(
             beam_d+2.*np.tan(.5*optics_fov)*m7_f,
             m6_d_in+2.*np.tan(.5*optics_fov)*combiner_f)
-        m30 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[-m6_d_out*.5-.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0.,  np.pi/4.))
-        m31 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[ m6_d_out*.5+.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0., -np.pi/4.))
-        m40 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-m6_d_out*.5-.5*m3_d, 0., 0.], q=quat.from_angles(0.,  np.pi/4.))
-        m41 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ m6_d_out*.5+.5*m3_d, 0., 0.], q=quat.from_angles(0., -np.pi/4.))
-        m50 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-combiner_b*.5, 0., 0.], q=quat.from_angles(0., -np.pi/4.))
-        m51 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ combiner_b*.5, 0., 0.], q=quat.from_angles(0.,  np.pi/4.))
-        m6  = SymmetricQuadricMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True)
-        m7  = SymmetricQuadricMirror(0., m7_d, f=m7_f, g=m7_g, b=(0,1))
-        d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m7_g-m7_f])
+        m30 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[-m6_d_out*.5-.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0.,  np.pi/4.), name='M30')
+        m31 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[ m6_d_out*.5+.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0., -np.pi/4.), name='M31')
+        m40 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-m6_d_out*.5-.5*m3_d, 0., 0.], q=quat.from_angles(0.,  np.pi/4.), name='M40')
+        m41 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ m6_d_out*.5+.5*m3_d, 0., 0.], q=quat.from_angles(0., -np.pi/4.), name='M41')
+        m50 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-combiner_b*.5, 0., 0.], q=quat.from_angles(0., -np.pi/4.), name='M50')
+        m51 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ combiner_b*.5, 0., 0.], q=quat.from_angles(0.,  np.pi/4.), name='M51')
+        m6  = SymmetricQuadricMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True, name='M6')
+        m7  = SymmetricQuadricMirror(0., m7_d, f=m7_f, g=m7_g, b=(0,1), name='M7')
+        d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m7_g-m7_f], name='D0')
         # periscope between combiner and collector 0
-        pr0 = OpticalAssembly()
+        pr0 = OpticalSystem()
         # periscope between combiner and collector 1
-        pr1 = OpticalAssembly()
+        pr1 = OpticalSystem()
         # delay line controller after periscope 0
-        dl0 = OpticalAssembly()
+        dl0 = OpticalSystem()
         # delay line controller after periscope 1
-        dl1 = OpticalAssembly()
+        dl1 = OpticalSystem()
         # left arm, including photon collector 0, periscope 0, and delay line controller 0.
-        arm0 = OpticalAssembly()
+        arm0 = OpticalSystem()
         # right arm
-        arm1 = OpticalAssembly()
+        arm1 = OpticalSystem()
         # beam combiner
-        bc  = OpticalAssembly()
+        bc  = OpticalSystem()
         pr0.add_part(pc0.parts[-1])
         pr0.add_part(m30)
         pr1.add_part(pc1.parts[-1])
@@ -1318,7 +1408,7 @@ class SIM(OpticalAssembly):
         self.periscopes = [pr0, pr1]
         self.delaylines = [dl0, dl1]
         self.combiner   = bc
-        # set base points of sub-assemblies.
+        # set base points of sub-systems.
         # delay line controllers
         for dl in self.delaylines:
             dl.p = .5*(dl.parts[0].p + dl.parts[1].p)
