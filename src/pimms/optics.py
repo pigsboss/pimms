@@ -1053,6 +1053,8 @@ class OpticalSystem(object):
                 toc = time()-tic
                 print('computing intersection: {:f} seconds'.format(toc))
             msbuf[:] = k
+            if np.allclose(msbuf, -1):
+                break
             mirror_sequence.append(np.copy(msbuf))
             m = np.isinf(t)
             spbuf[m] = photon_trace[i][m]
@@ -1066,8 +1068,6 @@ class OpticalSystem(object):
                     toc = time()-tic
                     print('computing outcomes: {:f} seconds'.format(toc))
             photon_trace.append(np.copy(spbuf))
-            if np.allclose(msbuf, -1):
-                break
             i += 1
         return np.concatenate(photon_trace).reshape((-1,photon_in.size)), np.concatenate(mirror_sequence).reshape((-1,photon_in.size))
 
@@ -1083,7 +1083,7 @@ class OpticalSystem(object):
         photon_trace - snapshots of photons at each step
         mirror_trace - optical parts encountered at each step
         """
-        nvtx = nx.dag_longest_path_length(network)+3
+        nvtx = nx.dag_longest_path_length(network)+2
         npts = photon_in.size
         photon_trace      = np.empty((nvtx, npts), dtype=sptype)
         mirror_trace      = np.empty((nvtx, npts), dtype=mstype)
@@ -1099,7 +1099,7 @@ class OpticalSystem(object):
             mp = np.bool_(k==ip)
             photon_trace[1,mp] = p.encounter(photon_trace[0,mp], n[:,mp])
             mirror_trace[1,mp] = ip
-        # layer 2 to N-1
+        # layer 2 to N
         from_parts = to_parts
         for l in range(2, nvtx):
             photon_trace[l,:] = photon_trace[l-1,:]
@@ -1120,8 +1120,6 @@ class OpticalSystem(object):
                 photon_trace[l,mfp] = ptbuf
                 mirror_trace[l,mfp] = mtbuf
             from_parts = to_parts
-        # layer N, exit
-        assert np.allclose(mirror_trace[-1,:], -1)
         return photon_trace, mirror_trace
     
     def aperture_stop(self, network):
