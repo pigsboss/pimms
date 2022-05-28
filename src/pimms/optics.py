@@ -1034,16 +1034,26 @@ class OpticalSystem(object):
         profiling - print simple profiling messages or not
 
         Returns:
-        photon_trace    - photon trace at each step
-        mirror_sequence - optical parts encountered at each step
+        photon_trace - photon trace at each step
+        mirror_trace - optical parts encountered at each step
+
+        Both photon_trace and mirror_trace are numpy array
+        in (nvtx, npts), where nvtx is the number of vertices
+        and npts is the number of tracked super photons.
+        Each vertex is a snapshot of the photon along its trace.
+        The first vertex is a replicate of the input photon.
+        The second vertex is the outcome after a photon encounters
+        the first optical parts along its trace.
+        Say there are N segments between adjacent optical parts
+        along a trace, as a result there are N+2 vertices in total.
         """
         photon_trace = []
-        mirror_sequence = []
+        mirror_trace = []
         msbuf = np.empty((photon_in.size,), dtype=mstype)
         spbuf = np.copy(photon_in)
         msbuf[:] = -1
         photon_trace.append(np.copy(spbuf))
-        mirror_sequence.append(np.copy(msbuf))
+        mirror_trace.append(np.copy(msbuf))
         i = 0
         max_raytracing_steps = len(self.parts) * self.raytracing_multiplier
         while i < max_raytracing_steps:
@@ -1055,7 +1065,7 @@ class OpticalSystem(object):
             msbuf[:] = k
             if np.allclose(msbuf, -1):
                 break
-            mirror_sequence.append(np.copy(msbuf))
+            mirror_trace.append(np.copy(msbuf))
             m = np.isinf(t)
             spbuf[m] = photon_trace[i][m]
             hits = np.bincount(k[~m], minlength=len(self.parts))
@@ -1069,7 +1079,8 @@ class OpticalSystem(object):
                     print('computing outcomes: {:f} seconds'.format(toc))
             photon_trace.append(np.copy(spbuf))
             i += 1
-        return np.concatenate(photon_trace).reshape((-1,photon_in.size)), np.concatenate(mirror_sequence).reshape((-1,photon_in.size))
+        return np.concatenate(photon_trace).reshape((-1,photon_in.size)), \
+            np.concatenate(mirror_trace).reshape((-1,photon_in.size))
 
     def trace_network(self, photon_in, network, profiling=False):
         """Trace photons in optical system via previously built optical path network.
