@@ -710,6 +710,7 @@ class OpticalSystem(object):
         self.q = np.double(q).reshape((4,1))
         self.parts = []
         self.name = name
+        self.raytracing_multiplier = 2 # max_raytracing_steps = raytracing_multiplier * num_parts
 
     def get_entrance(self):
         """Get entrance apertures.
@@ -997,40 +998,44 @@ class OpticalSystem(object):
                     plt.close()
         return trigs, Zs, extent
     
-    def intersect(self, photon_in):
+    def intersect(self, photon_in, parts=None):
         """Find intersections of incident light rays and the mirrors.
 
         Arguments:
         photon_in - incident super photons.
+        parts     - list of all parts the light rays may encouter.
 
         Returns:
         n - intersections, in lab csys.
         t - optical path lengths between starting points and intersections.
-        k - indices of mirror encounted with.
+        k - indices of mirror encountered.
         """
+        if parts is None:
+            parts = self.parts
         n = np.empty((3, photon_in.size), dtype='double')
         t = np.empty((photon_in.size,  ), dtype='double')
         k = np.empty((photon_in.size,  ), dtype=mstype  )
         n[:] = np.nan
         t[:] = np.inf
         k[:] = -1
-        for i in range(len(self.parts)):
-            ni, ti = self.parts[i].intersect(photon_in)
+        for i in range(len(parts)):
+            ni, ti = parts[i].intersect(photon_in)
             m = np.bool_(ti<t)
             n[:] = np.where(m, ni, n)
             t[:] = np.where(m, ti, t)
-            k[:] = np.where(m,  i, k)
+            k[:] = np.where(m, self.parts.index(parts[i]), k)
         return n, t, k
 
-    def trace(self, photon_in, max_steps=100, profiling=False):
+    def trace(self, photon_in, profiling=False):
         """Trace photons in optical system.
 
         Arguments:
-        photon_in  - input photons
-        max_steps  - maximum number of ray-tracing steps
+        photon_in - input photons
+        profiling - print simple profiling messages or not
 
         Returns:
-        photon_trace - photon trace at each step
+        photon_trace    - photon trace at each step
+        mirror_sequence - optical parts encountered at each step
         """
         photon_trace = []
         mirror_sequence = []
@@ -1040,7 +1045,8 @@ class OpticalSystem(object):
         photon_trace.append(np.copy(spbuf))
         mirror_sequence.append(np.copy(msbuf))
         i = 0
-        while i < max_steps:
+        max_raytracing_steps = len(self.parts) * self.raytracing_multiplier
+        while i < max_raytracing_steps:
             tic = time()
             n,t,k = self.intersect(photon_trace[i])
             if profiling:
@@ -1050,8 +1056,6 @@ class OpticalSystem(object):
             mirror_sequence.append(np.copy(msbuf))
             m = np.isinf(t)
             spbuf[m] = photon_trace[i][m]
-            if np.allclose(msbuf, -1):
-                break
             hits = np.bincount(k[~m], minlength=len(self.parts))
             for l in range(len(self.parts)):
                 tic = time()
@@ -1062,14 +1066,69 @@ class OpticalSystem(object):
                     toc = time()-tic
                     print('computing outcomes: {:f} seconds'.format(toc))
             photon_trace.append(np.copy(spbuf))
+            if np.allclose(msbuf, -1):
+                break
             i += 1
         return np.concatenate(photon_trace).reshape((-1,photon_in.size)), np.concatenate(mirror_sequence).reshape((-1,photon_in.size))
 
+    def trace_network(self, photon_in, network, profiling=False):
+        """Trace photons in optical system via previously built optical path network.
+
+        Arguments:
+        photon_in - input photons
+        network   - previously built optical path network
+        profiling - print simple profiling messages or not
+
+        Returns:
+        photon_trace - snapshots of photons at each step
+        mirror_trace - optical parts encountered at each step
+        """
+        nvtx = nx.dag_longest_path_length(network)+3
+        npts = photon_in.size
+        photon_trace      = np.empty((nvtx, npts), dtype=sptype)
+        mirror_trace      = np.empty((nvtx, npts), dtype=mstype)
+        photon_trace[0,:] = photon_in[:]
+        # layer 0, free space
+        mirror_trace[:,:] = -1
+        # layer 1, entrance
+        photon_trace[1,:] = photon_trace[0,:]
+        to_parts = network.get_entrance()
+        n,t,k = self.intersect(photon_trace[0,:], parts=to_parts)
+        for p in to_parts:
+            ip = self.parts.index(p)
+            mp = np.bool_(k==ip)
+            photon_trace[1,mp] = p.encounter(photon_trace[0,mp], n[:,mp])
+            mirror_trace[1,mp] = ip
+        # layer 2 to N-1
+        from_parts = to_parts
+        for l in range(2, nvtx):
+            photon_trace[l,:] = photon_trace[l-1,:]
+            to_parts = []
+            for fp in from_parts:
+                sub_to_parts = [p for p in network.successors(fp)]
+                to_parts += sub_to_parts
+                ifp = self.parts.index(fp)
+                mfp = np.bool_(mirror_trace[l-1,:]==ifp)
+                n,t,k = self.intersect(photon_trace[l-1,mfp], parts=sub_to_parts)
+                ptbuf = np.copy(photon_trace[l,mfp])
+                mtbuf = np.copy(mirror_trace[l,mfp])
+                for tp in sub_to_parts:
+                    itp = self.parts.index(tp)
+                    mtp = np.bool_(k==itp)
+                    ptbuf[mtp] = tp.encounter(photon_trace[l-1,mfp][mtp], n[:,mtp])
+                    mtbuf[mtp] = itp
+                photon_trace[l,mfp] = ptbuf
+                mirror_trace[l,mfp] = mtbuf
+            from_parts = to_parts
+        # layer N, exit
+        assert np.allclose(mirror_trace[-1,:], -1)
+        return photon_trace, mirror_trace
+    
     def aperture_stop(self, network):
         """Find aperture stop of the optical system provided the optical path network.
         
         """
-        
+        pass
 
     def entrance_pupil(self):
         pass
@@ -1087,6 +1146,9 @@ class OpticalSystem(object):
         pass
 
 class OpticalPathNetwork(nx.classes.digraph.DiGraph):
+    """An optical path network is a directed acyclic graph (DAG) that represents
+    optical paths between components of a given optical system and a light source.
+    """
     def __init__(
             self,
             optical_system,
@@ -1099,7 +1161,6 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         the system. The underlying object for the optical path network is directed
         graph implemented with NetworkX.
 
-        The optical path network consists of nodes (optical parts) and edges (optical paths). 
 
         Arguments:
         optical_system - underlying physical entity of the optical path network
@@ -1132,8 +1193,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             for ec in edge_codes:
                 to_idx = np.mod(ec, len(optical_system.parts))
                 from_idx = (ec-to_idx)//len(optical_system.parts)
-                if not (optical_system.parts[to_idx].is_virtual or optical_system.parts[from_idx].is_virtual):
-                    self.add_edge(optical_system.parts[from_idx], optical_system.parts[to_idx])
+                self.add_edge(optical_system.parts[from_idx], optical_system.parts[to_idx])
 
     def draw(self, pos=None, output=None, **kwargs):
         """Draw optical path network.
@@ -1143,15 +1203,40 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         **kwargs - keyword options to pass to networkx.draw()
         """
         if pos is None:
-            pos = nx.spring_layout(self, pos=nx.spectral_layout(self))
-        nx.draw(self, pos=pos, **kwargs)
-        nx.draw_networkx_labels(self, pos, {node:node.name for node in self.nodes})
-        plt.tight_layout()
+            pos = nx.spring_layout(self, pos=nx.kamada_kawai_layout(self), iterations=2)
+        if 'node_color' not in kwargs:
+            kwargs['node_color'] = 'navy'
+        if 'font_size' not in kwargs:
+            kwargs['font_size'] = 7
+        if 'font_color' not in kwargs:
+            kwargs['font_color'] = 'lightgray'
+        nx.draw_networkx(self, pos=pos, with_labels=True, labels={node:node.name for node in self.nodes}, **kwargs)
         if output is None:
             plt.show()
         else:
             plt.savefig(output)
             plt.close()
+
+    def get_entrance(self):
+        """Get entrance nodes if there is any.
+        An entrance node get photons directly and only from the light source.
+        """
+        nodes = []
+        for node in self.nodes:
+            if self.in_degree(node)==0:
+                nodes.append(node)
+        return nodes
+    
+    def get_exit(self):
+        """Get exit nodes if there is any.
+        An exit node absorbs or scatters all photons so that no other node get
+        any photon from it.
+        """
+        nodes = []
+        for node in self.nodes:
+            if self.out_degree(node)==0:
+                nodes.append(node)
+        return nodes
             
 class Detector(SymmetricQuadricMirror):
     """Pixel-array photon detector model.
@@ -1331,11 +1416,11 @@ class SIM(OpticalSystem):
         # photon collectors
         pc0 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
         pc1 = PhotonCollector(d=collector_d, f=collector_f, r=collector_r, fov=optics_fov)
-        pc0.parts[0].name='Entrance 0'
+        pc0.parts[0].name='E0'
         pc0.parts[1].name='M00'
         pc0.parts[2].name='M10'
         pc0.parts[3].name='M20'
-        pc1.parts[0].name='Entrance 1'
+        pc1.parts[0].name='E1'
         pc1.parts[1].name='M01'
         pc1.parts[2].name='M11'
         pc1.parts[3].name='M21'
