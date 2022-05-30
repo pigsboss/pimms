@@ -27,6 +27,34 @@ sptype = np.dtype([
 # mirror sequence data type:
 mstype = 'int16'
 
+def gimbal(u, phi, theta):
+    """Perturbs unit vector u around an axis a by angle theta, while
+    the angle between a and its co-vector v is phi.
+    In a certain coordinate system where u=(1,0,0) and v=(0,0,1),
+    a=(cos(phi), sin(phi), 0).
+
+    Arguments:
+    u      - 3D unit vectors, in (N, 3)
+    phi    - azimuth angles, or angles between a and v, in (N,)
+    theta  - elevation angles, or angles around a, in (N,)
+
+    Returns:
+    u_new  - Perturbed unit vector, in (N, 3)
+    """
+    beta = np.arctan2(u[:,1], u[:,0])
+    u_xy = u[:,0]**2. + u[:,1]**2.
+    cos_alpha = u_xy**.5
+    sin_alpha = (1. - u_xy)**.5
+    cos_theta = np.cos(theta/2.)
+    sin_theta = np.sin(theta/2.)
+    q = np.double([
+        cos_theta,
+        -sin_theta*sin_alpha*np.cos(beta),
+        -sin_theta*sin_alpha*np.sin(beta),
+        sin_theta*cos_alpha])
+    u_new = quat.rotate(q, u.transpose())
+    return u_new.transpose()
+
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -45,7 +73,10 @@ class LightSource(object):
         self.intensity  = intensity
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
-        self.direction  = np.double([np.sin(self.theta)*np.cos(self.phi), np.sin(self.theta)*np.sin(self.phi), np.cos(self.theta)]) # unit vector from the origin to the source
+        self.direction  = np.double([
+            np.sin(self.theta)*np.cos(self.phi),
+            np.sin(self.theta)*np.sin(self.phi),
+            np.cos(self.theta)]) # unit vector from the origin to the source
         self.num_crosshairs = 8
     def __call__(self, list_of_apertures, num_super_photons, dt, sampling='dizzle'):
         """Shed super photons onto mirrors.
@@ -1317,6 +1348,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """Find entrance pupil of the underlying optical system.
         
         """
+        #TODO
         pass
     
     def exit_pupil(self):
