@@ -1322,9 +1322,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
-        _,q = on_axis_source(
-            self.graph['optical_system'].get_entrance(),
-            rays, 1., sampling='crosshair')
+        _,q = on_axis_source(self.entrance_nodes(), rays, 1., sampling='crosshair')
         pt,mt = self.graph['optical_system'].trace_network(q, self)
         stops = [] # list of aperture stops
         from_parts = self.entrance_nodes()
@@ -1344,13 +1342,96 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
     def field_stop(self):
         pass
     
-    def entrance_pupil(self):
+    def entrance_pupil(
+            self,
+            aperture_stops=None,
+            on_axis_source=None,
+            batch_rays=10000,
+            perturbation=3.,
+            min_samplings=1000,
+            max_batches=10,
+            verbose=False):
         """Find entrance pupil of the underlying optical system.
-        
+
+        Arguments:
+        aperture_stops  - List of aperture stops.
+        on_axis_source  - The on-axis light source used to determine
+                          the aperture stop(s). By definition the
+                          marginal rays from an on-axis source is limited
+                          by aperture stop(s).
+        batch_rays      - Number of rays per batch.
+        perturbation    - Perturbation size in term of standard deviation,
+                          in degrees.
+                          Light rays hit aperture stops from on-axis source
+                          is perturbed before traced backwards to entrance
+                          of the optical system in order to find intersections
+                          between rays from the same locations on the aperture
+                          stops.
+        min_samplings   - Minimum number of sampling points required
+                          on the entrance pupil.
+        max_batches     - Maximum number of batches.
+                          Process will be terminated when it reaches this limit
+                          and RuntimeError is raised.
+        verbose         - Print verbose messages for diagnosis.
         """
-        #TODO
-        pass
-    
+        if on_axis_source is None:
+            on_axis_source = self.graph['light_source']
+        if aperture_stops is None:
+            aperture_stops = self.aperture_stop(on_axis_source=on_axis_source)
+        entrance = self.entrance_nodes()
+        num_samplings = 0
+        samplings = []
+        batch = 0
+        optics = self.graph['optical_system']
+        while num_samplings < min_samplings:
+            if batch < max_batches:
+                batch += 1
+            else:
+                raise RuntimeError("Limit max_batches reached. Try increase max_batches or decrease min_samplings.")
+            _,q = on_axis_source(
+                entrance,
+                batch_rays, 1.,
+                sampling='random') # sampled super photons from on-axis source
+            pt0, mt0 = optics.trace_network(
+                q, self, stops=aperture_stops) # forward raytracing
+            m0 = np.zeros(mt0[0,:].shape, dtype='bool') # boolean mask
+            m0[:] = False
+            for s in aperture_stops:
+                m0[:] = (m0[:] | (mt0[-1,:]==optics.parts.index(s)))
+            p = pt0[-1,m0]
+            if verbose:
+                print("Batch {:d}: {:d} rays traced on aperture stop.".format(batch, p.size))
+            p['direction'][:] = gimbal(
+                -p['direction'][:],
+                np.pi*np.random.rand(*p.shape),
+                np.random.normal(
+                    np.zeros(p.shape),
+                    np.deg2rad(perturbation)))
+            if verbose:
+                print("Batch {:d}: {:d} rays perturbed.".format(batch, p.size))
+            pt1, mt1 = optics.trace_network(
+                p, self, reverse=True,
+                starts=aperture_stops,
+                stops=entrance)
+            m1 = np.zeros(mt1[0,:].shape, dtype='bool')
+            m1[:] = False
+            for s in entrance:
+                m1[:] = (m1[:] | (mt1[-1,:]==optics.parts.index(s)))
+            p = pt1[-1,m1]
+            if verbose:
+                print("Batch {:d}: {:d} backwards rays traced on entrance.".format(batch, p.size))
+            n, s = lins.two_lines_intersection(
+                pt0[0,m0][m1]['position'],
+                pt0[0,m0][m1]['direction'],
+                p['position'],
+                p['direction'])
+            m2 = ~np.isnan(s[:])
+            if verbose:
+                print("Batch {:d}: {:d} intersections solved, S-stats: {:.2E} (min), {:.2E} (max), {:.2E} (avg).".format(batch, s[m2].size, np.min(s[m2]), np.max(s[m2]), np.mean(s[m2])))
+            samplings.append(n[m2,:])
+            num_samplings += s[m2].size
+        return np.concatenate(samplings)
+            
     def exit_pupil(self):
         pass
 
