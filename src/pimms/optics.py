@@ -1410,13 +1410,30 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             on_axis_source = self.graph['light_source']
         entrance_nodes = self.entrance_nodes()
         exit_nodes = self.exit_nodes()
+        # all direct successors of optical objects
         all_successors = []
         for obj in list_of_objects:
             all_successors += [node for node in self.successors(obj)]
+        # all direct predecessors of exit nodes
+        all_predecessors = []
+        for obj in exit_nodes:
+            all_predecessors += [node for node in self.predecessors(obj)]
+        # number of collected samplings
         num_samplings = 0
+        # list of samplings per batch
         samplings = []
+        # batch counter
         batch = 0
+        # underlying optical system
         optics = self.graph['optical_system']
+        # list of indices of optical objects
+        objidx = [optics.parts.index(obj) for obj in list_of_objects]
+        # list of indices of entrance nodes
+        entidx = [optics.parts.index(obj) for obj in entrance_nodes]
+        # list of indices of exit nodes
+        extidx = [optics.parts.index(obj) for obj in exit_nodes]
+        # list of indices of pre-exit nodes
+        preidx = [optics.parts.index(obj) for obj in all_predecessors]
         while num_samplings < min_samplings:
             if batch < max_batches:
                 batch += 1
@@ -1431,12 +1448,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             pt0, mt0 = optics.trace_network(
                 q, self,
                 starts=entrance_nodes,
-                stops=exit_nodes) # forward raytracing
-            m0 = np.zeros((mt0.size,), dtype='bool') # boolean mask
-            m0[:] = False
-            for obj in list_of_objects:
-                m0[:] = (m0[:] | (mt0.ravel()==optics.parts.index(obj)))
-            p = pt0.ravel()[m0]
+                stops=all_predecessors) # forward raytracing
+            p0, m0 = filter_trace(pt0, mt0, objidx)
+            p = p0[m0]
             if verbose:
                 print("Batch {:d}: {:d} rays traced on objects.".format(
                     batch, p.size))
@@ -1455,29 +1469,24 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     p, self, reverse=True,
                     starts=list_of_objects,
                     stops=entrance_nodes)
-                m1 = np.zeros(mt1[0,:].shape, dtype='bool')
-                m1[:] = False
-                for obj in entrance_nodes:
-                    m1[:] = (m1[:] | (mt1[-1,:]==optics.parts.index(obj)))
-                p = pt1[-1,m1]
+                p1, m1 = filter_trace(pt1, mt1, entidx)
+                p = p1[m1]
                 if verbose:
                     print("Batch {:d}: {:d} backwards rays traced on entrance.".format(
                         batch, p.size))
-                q = pt0.ravel()[m0][m1]
+                q = pt0[ 0, m0][m1]
             else:
                 pt1, mt1 = optics.trace_network(
                     p, self,
                     starts=all_successors,
                     stops=exit_nodes)
-                m1 = np.zeros(mt1[0,:].shape, dtype='bool')
-                m1[:] = False
-                for obj in exit_nodes:
-                    m1[:] = (m1[:] | (mt1[-1,:]==optics.parts.index(obj)))
-                p = pt1[-1,m1]
+                _, m1 = filter_trace(pt1, mt1, extidx)
+                p1, m2  = filter_trace(pt1, mt1, preidx)
+                p = p1[m1&m2]
                 if verbose:
-                    print("Batch {:d}: {:d} backwards rays traced on entrance.".format(
+                    print("Batch {:d}: {:d} forwards rays traced before exit.".format(
                         batch, p.size))
-                q = pt0[0,m0][m1]
+                q = pt0[-1, m0][m1&m2]
             n, s = lins.two_lines_intersection(
                 q['position'], q['direction'],
                 p['position'], p['direction'])
@@ -1487,10 +1496,17 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     batch, s[m2].size) + \
                       "S-stats: {:.2E} (min), {:.2E} (max), {:.2E} (avg).".format(
                     np.min(s[m2]), np.max(s[m2]), np.mean(s[m2])))
-            samplings.append(n[m2,:])
-            num_samplings += s[m2].size
+            m3 = np.bool_(np.abs(s[m2])<1e-13)
+            if verbose:
+                print("Batch {:d}: {:d} samplings collected.".format(
+                    batch, s[m2][m3].size))
+            samplings.append(n[m2,:][m3,:])
+            num_samplings += s[m2][m3].size
         return np.concatenate(samplings)
-            
+
+    def entrance_pupil(self):
+        pass
+    
     def exit_pupil(self):
         pass
 
