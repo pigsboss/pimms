@@ -47,7 +47,7 @@ def gimbal(u, phi, theta):
     sin_alpha = (1. - u_xy)**.5
     cos_theta = np.cos(theta/2.)
     sin_theta = np.sin(theta/2.)
-    q = np.double([
+    q = np.array([
         cos_theta,
         -sin_theta*sin_alpha*np.cos(beta),
         -sin_theta*sin_alpha*np.sin(beta),
@@ -99,7 +99,7 @@ class LightSource(object):
         self.intensity  = intensity
         self.wavelength = wavelength
         self.energy     = hc / self.wavelength
-        self.direction  = np.double([
+        self.direction  = np.array([
             np.sin(self.theta)*np.cos(self.phi),
             np.sin(self.theta)*np.sin(self.phi),
             np.cos(self.theta)]) # unit vector from the origin to the source
@@ -183,7 +183,7 @@ class LightSource(object):
                 # samplings of aperture in lab coordinates
                 r = quat.rotate(aperture.q, [rho*np.cos(phi), rho*np.sin(phi), 0.]) + aperture.p
                 t = -(r[0]*self.direction[0]+r[1]*self.direction[1]+r[2]*self.direction[2])-opm
-                s = np.double([
+                s = np.array([
                     r[0]+self.direction[0]*t,
                     r[1]+self.direction[1]*t,
                     r[2]+self.direction[2]*t])
@@ -225,16 +225,16 @@ class LightSource(object):
                         npix_stop = hp.ang2pix(nside, beta, 0.)
                         npix_half = hp.ang2pix(nside, beta, np.pi)
                         npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
-                        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_stop)))*R
+                        xs, ys, _ = np.array(hp.pix2vec(nside, range(npix_stop)))*R
                     elif sampling.lower()=='dizzle':
                         nside = 2**int(np.log2((num_super_photons/6./(1.-np.cos(beta)))**.5))
                         npix_stop = hp.ang2pix(nside, beta, 0.)
                         npix_half = hp.ang2pix(nside, beta, np.pi)
                         npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
-                        xs,ys,zs  = np.double(hp.pix2vec(nside, range(npix_stop)))*R
+                        xs,ys,zs  = np.array(hp.pix2vec(nside, range(npix_stop)))*R
                         dizzle_axis = quat.ptr2xyz(np.pi*2.*np.random.rand(1), 0., 1.)
                         dizzle_dist = np.random.rand(1)*hp.nside2resol(nside)/2.
-                        dizzle_quat = np.double([
+                        dizzle_quat = np.array([
                             np.cos(dizzle_dist/2.),
                             np.sin(dizzle_dist/2.)*dizzle_axis[0],
                             np.sin(dizzle_dist/2.)*dizzle_axis[1],
@@ -272,17 +272,17 @@ class LightSource(object):
                     theta, phi = hp.pix2ang(nside, range(npix))
                     dizzle_axis = quat.ptr2xyz(np.pi*2.*np.random.rand(1), 0., 1.)
                     dizzle_dist = np.random.rand(1)*hp.nside2resol(nside)/2.
-                    dizzle_quat = np.double([
+                    dizzle_quat = np.array([
                         np.cos(dizzle_dist/2.),
                         np.sin(dizzle_dist/2.)*dizzle_axis[0],
                         np.sin(dizzle_dist/2.)*dizzle_axis[1],
                         np.sin(dizzle_dist/2.)*dizzle_axis[2]])
-                    xs,ys,zs  = quat.rotate(dizzle_quat, np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)))
+                    xs,ys,zs  = quat.rotate(dizzle_quat, np.array(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)))
                     theta, phi  = quat.xyz2ptr(xs, ys, zs)
                     theta = np.pi/2.-theta
                 sp_start = np.zeros((num_super_photons,), dtype=sptype)
                 sp_start['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
-                sp_start['direction'] = np.double(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
+                sp_start['direction'] = np.array(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
             sp_start['position'] = p
         sp_start['phase'] = 0.
         #
@@ -395,8 +395,8 @@ class SymmetricQuadricMirror(object):
         self.boundary = b
         self.f        = f
         self.g        = g
-        self.p        = np.double(p).reshape((3,1))
-        self.q        = np.double(q).reshape((4,1))
+        self.p        = np.array(p).reshape((3,1))
+        self.q        = np.array(q).reshape((4,1))
         self.name     = name
         self.is_primary  = bool(is_primary)
         self.is_virtual  = bool(is_virtual)
@@ -480,7 +480,7 @@ class SymmetricQuadricMirror(object):
         npix_stop = hp.ang2pix(nside, theta_out, 0.)
         npix_half = hp.ang2pix(nside, theta_out, np.pi)
         npix_stop = int(npix_stop + 2*(npix_half-npix_stop))
-        xs, ys, _ = np.double(hp.pix2vec(nside, range(npix_stop)))*self.d_out
+        xs, ys, _ = np.array(hp.pix2vec(nside, range(npix_stop)))*self.d_out
         rs = (xs**2.+ys**2.)**.5
         if np.isinf(self.f):
             zs = np.zeros_like(xs)
@@ -635,7 +635,7 @@ class SymmetricQuadricMirror(object):
         z = self.height(n[0,~t_is_inf], n[1,~t_is_inf])
         dz = (n[2,~t_is_inf]-z)
         while k<min_corrections or (k<max_corrections and not np.all(np.isclose(dz, 0.))):
-            v = self.normal(np.double([n[0,~t_is_inf], n[1,~t_is_inf], z])) # normal vector
+            v = self.normal(np.array([n[0,~t_is_inf], n[1,~t_is_inf], z])) # normal vector
             cos_theta = v[2]/np.sum(v**2., axis=0)**.5
             cos_alpha = np.abs(np.sum(u[:,~t_is_inf]*v[:],axis=0)) / \
                 quat.norm(u[:,~t_is_inf]) / quat.norm(v)
@@ -703,7 +703,7 @@ class SymmetricQuadricMirror(object):
         #     ne.evaluate('x2*2.*rx+xy*ry+xz*rz+x', local_dict=d),
         #     ne.evaluate('y2*2.*ry+xy*rx+yz*rz+y', local_dict=d),
         #     ne.evaluate('z2*2.*rz+yz*ry+xz*rx+z', local_dict=d)])
-        n = np.double([
+        n = np.array([
             self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
             self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
             self.coef['z2']*2.*r[2]+self.coef['yz']*r[1]+self.coef['xz']*r[0]+self.coef['z']])
@@ -751,8 +751,8 @@ class SymmetricQuadricMirror(object):
         p = np.transpose(photon_out['position'] - photon_in['position'])
         u = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
         d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
-        top_mask = np.double([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
-        bot_mask = np.double([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
+        top_mask = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
+        bot_mask = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
         v = u.transpose()*np.where(d<0., top_mask, bot_mask)
         photon_out['direction'][:] = quat.rotate(q, v.transpose()).transpose()
         photon_out['phase'][:]     = photon_in['phase'] + \
@@ -776,8 +776,8 @@ class OpticalSystem(object):
         r' = qrq' + p,
         where r is vector in system fixed csys and r' is vector in lab csys.
         """
-        self.p = np.double(p).reshape((3,1))
-        self.q = np.double(q).reshape((4,1))
+        self.p = np.array(p).reshape((3,1))
+        self.q = np.array(q).reshape((4,1))
         self.parts = []
         self.name = name
         self.raytracing_multiplier = 2 # max_raytracing_steps = raytracing_multiplier * num_parts
@@ -846,8 +846,8 @@ class OpticalSystem(object):
         new position: p' = p + dp
         """
         for m in self.parts:
-            m.p = m.p + np.double(dp).reshape((3,1))
-        self.p = self.p + np.double(dp).reshape((3,1))
+            m.p = m.p + np.array(dp).reshape((3,1))
+        self.p = self.p + np.array(dp).reshape((3,1))
         return self.p
     
     def rotate(self, dq):
@@ -856,21 +856,21 @@ class OpticalSystem(object):
         new attitude: q' = dq q dq'
         """
         for m in self.parts:
-            m.p = quat.rotate(np.double(dq).reshape((4,1)), m.p)
-            m.q = quat.multiply(np.double(dq).reshape((4,1)), m.q)
-        self.q = quat.multiply(np.double(dq).reshape((4,1)), self.q)
+            m.p = quat.rotate(np.array(dq).reshape((4,1)), m.p)
+            m.q = quat.multiply(np.array(dq).reshape((4,1)), m.q)
+        self.q = quat.multiply(np.array(dq).reshape((4,1)), self.q)
         return self.q
     
     def set_p(self, p):
         """Move to new position p.
         """
-        dp = np.double(p).reshape((3,1))-self.p
+        dp = np.array(p).reshape((3,1))-self.p
         self.move(dp)
         
     def set_q(self, q):
         """Rotate to new attitude q.
         """
-        dq = quat.multiply(np.double(q).reshape((4,1)), quat.conjugate(self.q))
+        dq = quat.multiply(np.array(q).reshape((4,1)), quat.conjugate(self.q))
         self.rotate(dq)
 
     def draw(
@@ -1082,8 +1082,8 @@ class OpticalSystem(object):
         """
         if parts is None:
             parts = self.parts
-        n = np.empty((3, photon_in.size), dtype='double')
-        t = np.empty((photon_in.size,  ), dtype='double')
+        n = np.empty((3, photon_in.size), dtype=sptype['position'].base)
+        t = np.empty((photon_in.size,  ), dtype=sptype['position'].base)
         k = np.empty((photon_in.size,  ), dtype=mstype  )
         n[:] = np.nan
         t[:] = np.inf
@@ -1374,9 +1374,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             end_of_image,
             on_axis_source=None,
             batch_rays=10000,
-            perturbation=3.,
+            init_perturb=1.,
             min_samplings=1000,
             max_batches=10,
+            min_precision=1e-15,
             verbose=False):
         """Find entrance pupil of the underlying optical system.
 
@@ -1394,8 +1395,8 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                           Besides the marginal rays from an on-axis source
                           is limited by aperture stop(s).
         batch_rays      - Number of rays per batch.
-        perturbation    - Perturbation size in term of standard deviation,
-                          in degrees.
+        init_perturb    - Initial perturbation scale in term of standard
+                          deviation, in degrees.
                           Light rays hit optical objects from on-axis source
                           is perturbed before traced backwards to entrance,
                           or forwards to exit of the optical system.
@@ -1404,6 +1405,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         max_batches     - Maximum number of batches.
                           Process will be terminated when it reaches this
                           limit and RuntimeError is raised.
+        min_precision   - Minimum precision required.
         verbose         - Print verbose messages for diagnosis.
         """
         if on_axis_source is None:
@@ -1434,6 +1436,11 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         extidx = [optics.parts.index(obj) for obj in exit_nodes]
         # list of indices of pre-exit nodes
         preidx = [optics.parts.index(obj) for obj in all_predecessors]
+        # perturbation scale
+        perturb = init_perturb
+        last_perturb = perturb
+        # number of interactions solved
+        num_int = 0
         while num_samplings < min_samplings:
             if batch < max_batches:
                 batch += 1
@@ -1451,17 +1458,18 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 stops=all_predecessors) # forward raytracing
             p0, m0 = filter_trace(pt0, mt0, objidx)
             p = p0[m0]
+            if p.size==0:
+                raise RuntimeError("No ray traced on objects.")
             if verbose:
                 print("Batch {:d}: {:d} rays traced on objects.".format(
                     batch, p.size))
             if end_of_image.lower()=='entrance':
                 p['direction'][:] = -p['direction'][:]
+            theta = np.random.normal(
+                np.zeros(p.shape),
+                np.deg2rad(perturb))
             p['direction'][:] = gimbal(
-                p['direction'][:],
-                np.pi*np.random.rand(*p.shape),
-                np.random.normal(
-                    np.zeros(p.shape),
-                    np.deg2rad(perturbation)))
+                p['direction'][:], np.pi*np.random.rand(*p.shape), theta)
             if verbose:
                 print("Batch {:d}: {:d} rays perturbed.".format(batch, p.size))
             if end_of_image.lower()=='entrance':
@@ -1482,26 +1490,49 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     stops=exit_nodes)
                 _, m1 = filter_trace(pt1, mt1, extidx)
                 p1, m2  = filter_trace(pt1, mt1, preidx)
-                p = p1[m1&m2]
+                m1 = m1&m2
+                p = p1[m1]
                 if verbose:
                     print("Batch {:d}: {:d} forwards rays traced before exit.".format(
                         batch, p.size))
-                q = pt0[-1, m0][m1&m2]
+                q = pt0[-1, m0][m1]
+            if p.size==0:
+                raise RuntimeError("All rays lost. Try decrease init_perturb.")
+            # find intersections
             n, s = lins.two_lines_intersection(
                 q['position'], q['direction'],
                 p['position'], p['direction'])
             m2 = ~np.isnan(s[:])
-            if verbose:
-                print("Batch {:d}: {:d} intersections solved,".format(
-                    batch, s[m2].size) + \
-                      "S-stats: {:.2E} (min), {:.2E} (max), {:.2E} (avg).".format(
-                    np.min(s[m2]), np.max(s[m2]), np.mean(s[m2])))
-            m3 = np.bool_(np.abs(s[m2])<1e-13)
-            if verbose:
-                print("Batch {:d}: {:d} samplings collected.".format(
-                    batch, s[m2][m3].size))
-            samplings.append(n[m2,:][m3,:])
-            num_samplings += s[m2][m3].size
+            if np.any(m2):
+                if verbose:
+                    print("Batch {:d}: {:d} intersections solved,".format(
+                        batch, s[m2].size) + \
+                          " S-stats: {:.2E} (peak), {:.2E} (avg), {:.2E} (std).".format(
+                              np.max(np.abs(s[m2])), np.mean(s[m2]), np.std(s[m2])))
+                # adaptive perturbation tuning
+                theta_80 = np.percentile(np.abs(theta[m1][m2]), 80)
+                theta_20 = np.percentile(np.abs(theta[m1][m2]), 20)
+                theta_hi = np.bool_(np.abs(theta[m1][m2])>=theta_80)
+                theta_lo = np.bool_(np.abs(theta[m1][m2])<=theta_20)
+                std_hi   = np.std(s[m2][theta_hi])
+                std_lo   = np.std(s[m2][theta_lo])
+                if verbose:
+                    print("Batch {:d}: {:.2E} degrees perturb, {:.2E} (hi), {:.2E} (lo).".format(
+                        batch, perturb, std_hi, std_lo))
+                if s[m2].size>num_int:
+                    last_perturb = perturb
+                    perturb = np.clip(perturb*np.clip((std_lo/std_hi), .1, 10.), None, 1.)
+                    num_int = s[m2].size
+                else:
+                    perturb = (perturb*last_perturb)**.5
+                m3 = np.bool_(np.abs(s[m2])<min_precision)
+                if verbose:
+                    print("Batch {:d}: {:d} samplings collected.".format(
+                        batch, s[m2][m3].size))
+                samplings.append(n[m2,:][m3,:])
+                num_samplings += s[m2][m3].size
+            else:
+                perturb = (init_perturb*perturb)**.5
         return np.concatenate(samplings)
 
     def entrance_pupil(self):
@@ -1544,8 +1575,8 @@ class Detector(SymmetricQuadricMirror):
             f=np.inf,
             g=np.inf,
             b=(0, 0),
-            p=np.double(p).reshape((3,1)),
-            q=np.double(q).reshape((4,1)),
+            p=np.array(p).reshape((3,1)),
+            q=np.array(q).reshape((4,1)),
             name=name,
             is_virtual=False,
             is_entrance=False,
@@ -1890,7 +1921,7 @@ amp and pha - detected amplitude and phase angles.
         x2  = x1+rr[0]*t
         y2  = y1+rr[1]*t
         # find transmittance map
-        tran = np.double(
+        tran = np.array(
             (rs>(self.d/self.r*.5)) &
             (rs<=(self.d*.5)) &
             ((x01**2.+y01**2.)**.5>(self.d*.5/self.r)) &
@@ -1968,7 +1999,7 @@ complex amplitude sampled by detector at t=0.
     zs = source[2]-zi[collected]
     alpha = np.arcsin(norm(np.cross([xs,ys,zs],[xn,yn,zn],axisa=0,axisb=0,axisc=0)) / norm([xs,ys,zs]) / norm([xn,yn,zn]))
     # reflected vector, from intersection
-    xr,yr,zr = 2.*np.cos(alpha)*np.double([xn,yn,zn])*norm([xs,ys,zs]) - np.double([xs,ys,zs])
+    xr,yr,zr = 2.*np.cos(alpha)*np.array([xn,yn,zn])*norm([xs,ys,zs]) - np.array([xs,ys,zs])
     ## assert np.allclose(np.arcsin(norm(np.cross([xn,yn,zn],[xr,yr,zr],axisa=0,axisb=0,axisc=0))/norm([xn,yn,zn])/norm([xr,yr,zr])),alpha)
 
     # intersection with detector plane
