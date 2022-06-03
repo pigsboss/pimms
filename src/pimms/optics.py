@@ -1631,8 +1631,36 @@ class CassegrainReflector(OpticalSystem):
             detector_fov=np.deg2rad(10./60.)
     ):
         super(CassegrainReflector, self).__init__()
-        
-    
+        primary_f      = f
+        primary_d_out  = d
+        secondary_f    = f/r
+        secondary_g    = -0.5*detector_a/np.tan(detector_fov*r/2.)
+        beam_d         = d/r
+        primary_d_in   = beam_d + 2.*np.tan(optics_fov/2.)*f*r
+        secondary_d    = primary_d_in + 2.*np.tan(optics_fov/2.)*f
+        entrance_d_out = primary_d_out + 2.*np.tan(optics_fov/2.)*f
+        entrance_d_in  = secondary_d
+        a0 = SymmetricQuadricMirror(
+            entrance_d_in, entrance_d_out,
+            f=np.inf, g=np.inf, b=(-1,-1),
+            is_entrance=True, is_virtual=True, name='E0')
+        m0 = SymmetricQuadricMirror(
+            primary_d_in, primary_d_out,
+            f=primary_f, g=np.inf, b=(1,0),
+            is_primary=True, name='M0')
+        m1 = SymmetricQuadricMirror(
+            0., secondary_d,
+            f=secondary_f, g=secondary_g, b=(0,1),
+            name='M1')
+        d0 = Detector(
+            a=detector_a, N=detector_n,
+            p=[0., 0., secondary_g-secondary_f],
+            name='D0')
+        self.parts.append(a0)
+        self.parts.append(m0)
+        self.parts.append(m1)
+        self.parts.append(d0)
+
 class PhotonCollector(OpticalSystem):
     def __init__(self, d=2., f=4., r=10., fov=np.deg2rad(5./60.)):
         super(PhotonCollector, self).__init__()
