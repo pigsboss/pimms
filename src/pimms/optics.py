@@ -1295,13 +1295,18 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 from_idx = (ec-to_idx)//len(optical_system.parts)
                 self.add_edge(optical_system.parts[from_idx], optical_system.parts[to_idx])
 
-    def draw(self, pos=None, output=None, **kwargs):
+    def draw(self, pos=None, axes=None, figure_size=(2000,2000), output=None, **kwargs):
         """Draw optical path network.
 
-        pos      - position of nodes
-        output   - output of figure (default: None, to print on the screen)
-        **kwargs - keyword options to pass to networkx.draw()
+        pos         - position of nodes
+        axes        - existing matplotlib axes object
+        figure_size - figure size in pixels
+        output      - output of figure (default: None, to print on the screen)
+        **kwargs    - keyword options to pass to networkx.draw()
         """
+        if axes is None:
+            fig = plt.figure(figsize = (figure_size[0]/rcParams['figure.dpi'], figure_size[1]/rcParams['figure.dpi']))
+            axes  = fig.add_subplot(111)
         if pos is None:
             pos = nx.spring_layout(self, pos=nx.kamada_kawai_layout(self), iterations=2)
         if 'node_color' not in kwargs:
@@ -1310,7 +1315,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             kwargs['font_size'] = 7
         if 'font_color' not in kwargs:
             kwargs['font_color'] = 'lightgray'
-        nx.draw_networkx(self, pos=pos, with_labels=True, labels={node:node.name for node in self.nodes}, **kwargs)
+        nx.draw_networkx(self, pos=pos, ax=axes, with_labels=True, labels={node:node.name for node in self.nodes}, **kwargs)
         if output is None:
             plt.show()
         else:
