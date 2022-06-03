@@ -9,6 +9,7 @@ import healpy as hp
 import copy
 import pymath.quaternion as quat
 import pymath.linsolvers as lins
+import pymath.statistics as stat
 from time import time
 from mayavi import mlab
 from matplotlib import rcParams
@@ -67,17 +68,18 @@ def filter_trace(photon_trace, mirror_trace, pidx_list):
 
     Returns:
     p  - snapshots of photon trace
-    m  - boolean mask of p, true for snapshot found on trace while
-         false for no snapshot found.
+    m  - mask of p, index of mirror for snapshot found on trace while
+         -1 for no snapshot found.
     """
     nvtx, npts = mirror_trace.shape
-    p   = np.empty((npts,), dtype=sptype)
-    m   = np.zeros((npts,), dtype='bool')
-    mij = np.empty((npts,), dtype='bool')
+    p    = np.empty((npts,), dtype=sptype)
+    m    = np.empty((npts,), dtype=mstype)
+    mij  = np.empty((npts,), dtype='bool')
+    m[:] = -1
     for i in range(nvtx):
         for j in pidx_list:
             mij[:] = (mirror_trace[i,:]==j)
-            m[:]   = (m[:] | mij[:])
+            m[mij] = j
             p[mij] = photon_trace[i,mij]
     return p, m
     
@@ -1286,7 +1288,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 self.add_node(p)
         for i in range(1, nvtx-1):
             # encode (from_part_index, to_part_index)
-            m = (np.isclose(mirror_trace[i], -1) | np.isclose(mirror_trace[i+1], -1))
+            m = ((mirror_trace[i]==-1) | (mirror_trace[i+1]==-1))
             edge_codes = np.unique(mirror_trace[i,~m]*len(optical_system.parts)+mirror_trace[i+1,~m])
             for ec in edge_codes:
                 to_idx = np.mod(ec, len(optical_system.parts))
@@ -1375,9 +1377,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             on_axis_source=None,
             batch_rays=10000,
             init_perturb=1.,
+            perturb_limits=(1e-5, 1.),
             min_samplings=1000,
             max_batches=10,
-            min_precision=1e-15,
+            min_precision=1e-9,
             verbose=False):
         """Find entrance pupil of the underlying optical system.
 
@@ -1400,6 +1403,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                           Light rays hit optical objects from on-axis source
                           is perturbed before traced backwards to entrance,
                           or forwards to exit of the optical system.
+        perturb_limits  - (min_perturb, max_perturb), in degrees.
         min_samplings   - Minimum number of sampling points required on the
                           image.
         max_batches     - Maximum number of batches.
@@ -1457,7 +1461,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 starts=entrance_nodes,
                 stops=all_predecessors) # forward raytracing
             p0, m0 = filter_trace(pt0, mt0, objidx)
-            p = p0[m0]
+            p = p0[m0>=0]
             if p.size==0:
                 raise RuntimeError("No ray traced on objects.")
             if verbose:
@@ -1465,11 +1469,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     batch, p.size))
             if end_of_image.lower()=='entrance':
                 p['direction'][:] = -p['direction'][:]
-            theta = np.random.normal(
-                np.zeros(p.shape),
-                np.deg2rad(perturb))
-            p['direction'][:] = gimbal(
-                p['direction'][:], np.pi*np.random.rand(*p.shape), theta)
+            phi   = 2.*np.pi*np.random.rand(*p.shape)
+            theta = np.deg2rad(np.reshape(stat.betadist(
+                perturb_limits[0], perturb_limits[1], perturb, 3., p.size), p.shape))
+            p['direction'][:] = gimbal(p['direction'][:], phi, theta)
             if verbose:
                 print("Batch {:d}: {:d} rays perturbed.".format(batch, p.size))
             if end_of_image.lower()=='entrance':
@@ -1478,11 +1481,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     starts=list_of_objects,
                     stops=entrance_nodes)
                 p1, m1 = filter_trace(pt1, mt1, entidx)
+                m1 = np.bool_(m1>=0)
                 p = p1[m1]
                 if verbose:
                     print("Batch {:d}: {:d} backwards rays traced on entrance.".format(
                         batch, p.size))
-                q = pt0[ 0, m0][m1]
+                q = pt0[ 0, m0>=0][m1]
             else:
                 pt1, mt1 = optics.trace_network(
                     p, self,
@@ -1490,12 +1494,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     stops=exit_nodes)
                 _, m1 = filter_trace(pt1, mt1, extidx)
                 p1, m2  = filter_trace(pt1, mt1, preidx)
-                m1 = m1&m2
+                m1 = np.bool_((m1>=0)&(m2>=0))
                 p = p1[m1]
                 if verbose:
                     print("Batch {:d}: {:d} forwards rays traced before exit.".format(
                         batch, p.size))
-                q = pt0[-1, m0][m1]
+                q = pt0[-1, m0>=0][m1]
             if p.size==0:
                 raise RuntimeError("All rays lost. Try decrease init_perturb.")
             # find intersections
@@ -1503,37 +1507,36 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 q['position'], q['direction'],
                 p['position'], p['direction'])
             m2 = ~np.isnan(s[:])
-            if np.any(m2):
-                if verbose:
-                    print("Batch {:d}: {:d} intersections solved,".format(
-                        batch, s[m2].size) + \
-                          " S-stats: {:.2E} (peak), {:.2E} (avg), {:.2E} (std).".format(
-                              np.max(np.abs(s[m2])), np.mean(s[m2]), np.std(s[m2])))
-                # adaptive perturbation tuning
-                theta_80 = np.percentile(np.abs(theta[m1][m2]), 80)
-                theta_20 = np.percentile(np.abs(theta[m1][m2]), 20)
-                theta_hi = np.bool_(np.abs(theta[m1][m2])>=theta_80)
-                theta_lo = np.bool_(np.abs(theta[m1][m2])<=theta_20)
-                std_hi   = np.std(s[m2][theta_hi])
-                std_lo   = np.std(s[m2][theta_lo])
-                if verbose:
-                    print("Batch {:d}: {:.2E} degrees perturb, {:.2E} (hi), {:.2E} (lo).".format(
-                        batch, perturb, std_hi, std_lo))
-                if s[m2].size>num_int:
-                    last_perturb = perturb
-                    perturb = np.clip(perturb*np.clip((std_lo/std_hi), .1, 10.), None, 1.)
-                    num_int = s[m2].size
-                else:
-                    perturb = (perturb*last_perturb)**.5
-                m3 = np.bool_(np.abs(s[m2])<min_precision)
-                if verbose:
-                    print("Batch {:d}: {:d} samplings collected.".format(
-                        batch, s[m2][m3].size))
-                samplings.append(n[m2,:][m3,:])
-                num_samplings += s[m2][m3].size
+            if np.all(~m2):
+                raise RuntimeError("No intersection solved.")
+            if verbose:
+                print("Batch {:d}: {:d} intersections solved,".format(
+                    batch, s[m2].size) + \
+                      " S-stats: {:.2E} (peak), {:.2E} (avg), {:.2E} (std).".format(
+                          np.max(np.abs(s[m2])), np.mean(s[m2]), np.std(s[m2])))
+            # adaptive perturbation tuning
+            theta_80 = np.percentile(np.abs(theta[m1][m2]), 80)
+            theta_20 = np.percentile(np.abs(theta[m1][m2]), 20)
+            theta_hi = np.bool_(np.abs(theta[m1][m2])>=theta_80)
+            theta_lo = np.bool_(np.abs(theta[m1][m2])<=theta_20)
+            std_hi   = np.std(s[m2][theta_hi])
+            std_lo   = np.std(s[m2][theta_lo])
+            if verbose:
+                print("Batch {:d}: {:.2E} degrees perturb, {:.2E} (hi), {:.2E} (lo).".format(
+                    batch, perturb, std_hi, std_lo))
+            if s[m2].size>=num_int:
+                last_perturb = perturb
+                perturb = perturb*np.clip((std_lo/std_hi), .1, 10.)
+                num_int = s[m2].size
             else:
-                perturb = (init_perturb*perturb)**.5
-        return np.concatenate(samplings)
+                perturb = (perturb*last_perturb)**.5
+            m3 = np.bool_(np.abs(s[m2])<min_precision)
+            if verbose:
+                print("Batch {:d}: {:d} samplings collected.".format(
+                    batch, s[m2][m3].size))
+            samplings.append(n[m2,:][m3,:])
+            num_samplings += s[m2][m3].size
+        return np.concatenate(samplings),s[m2],theta[m1][m2]
 
     def entrance_pupil(self):
         pass
@@ -1617,8 +1620,18 @@ class Detector(SymmetricQuadricMirror):
         return amp, pha
     
 class CassegrainReflector(OpticalSystem):
-    def __init__(self):
-        pass
+    def __init__(
+            self,
+            d=2.,
+            f=4.,
+            r=10.,
+            optics_fov=np.deg2rad(20./60.),
+            detector_a=0.15,
+            detector_n=128,
+            detector_fov=np.deg2rad(10./60.)
+    ):
+        super(CassegrainReflector, self).__init__()
+        
     
 class PhotonCollector(OpticalSystem):
     def __init__(self, d=2., f=4., r=10., fov=np.deg2rad(5./60.)):
