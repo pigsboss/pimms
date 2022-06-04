@@ -115,21 +115,35 @@ def find_chiefray(xi, yi, ui, vi):
     Linear transformation: translation, linear scaling and rotation.
     Affine transformation is a special case of linear transformation.
       U(x,y) = (ax+by+u0, cx+dy+v0).
+
+    Higher-order transformation: to be discussed.
+
+    Arguments:
+    xi and yi - x and y coordinates where light rays pass the aperture
+                stop, in fixed coordinate system of the aperture stop.
+    ui and vi - x and y coordinates where light rays pass the object
+                aperture, in fixed coordinate system of the aperture.
+
+    Returns:
     
     """
-    npts = xi.size
-    A = np.zeros((2*npts, 6), dtype=xi.dtype)
-    b = np.empty((2*npts,  ), dtype=xi.dtype)
-    A[:npts,0] = xi.ravel()
-    A[:npts,1] = yi.ravel()
-    A[npts:,2] = xi.ravel()
-    A[npts:,3] = yi.ravel()
-    A[:npts,4] = 1.
-    A[npts:,5] = 1.
-    b[:npts  ] = ui.ravel()
-    b[npts:  ] = vi.ravel()
-    x,res,rank,s = np.linalg.lstsq(A, b)
-    return x,res,rank,s
+    n = xi.size
+    A = np.zeros((2*n, 6), dtype=xi.dtype)
+    b = np.empty((2*n,  ), dtype=xi.dtype)
+    A[:n,0] = xi.ravel()
+    A[:n,1] = yi.ravel()
+    A[n:,2] = xi.ravel()
+    A[n:,3] = yi.ravel()
+    A[:n,4] = 1.
+    A[n:,5] = 1.
+    b[:n  ] = ui.ravel()
+    b[n:  ] = vi.ravel()
+    x,res,rank,s = np.linalg.lstsq(A, b, rcond=None)
+    u0  = x[-2]
+    v0  = x[-1]
+    T   = np.array([[x[0], x[1]],[x[2], x[3]]])
+    rms = (res/n)**.5
+    return u0,v0,T,rms
 
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
