@@ -82,7 +82,55 @@ def filter_trace(photon_trace, mirror_trace, pidx_list):
             m[mij] = j
             p[mij] = photon_trace[i,mij]
     return p, m
+
+def find_chiefray(xi, yi, ui, vi):
+    """Find chief ray intersection on given aperture.
+
+    A light beam consists of a bunch of light rays that intersects
+    the aperture stop of the optical system at (xi, yi), i=1,2,...N
+    is index of each light ray. The chief ray intersects the aperture
+    stop at (0,0), i.e., the center of the stop. However the chief
+    ray can not be traced directly when it is blocked by other parts
+    of the system, for instance, the secondary mirror of a Cassegrain
+    system.
+    Consider the mapping between intersections from aperture stop to
+    an arbitrary aperture of the optical system. The vector valued
+    bivariate function U(x,y) projects intersection (x,y) on the
+    aperture stop along an optical path to intersection (u,v) on
+    the object aperture, i.e., U(x,y) = (u,v). Assuming:
+    1. U(x,y) = (u,v) is a bijection,
+    2. U(x,y) = (u,v) is continuous, and
+    3. Inverse of U, U^-1(u,v) = (x,y) is also continuous,
+    the mapping is bicontinuous.
+    Above assumptions hold true unless the object aperture overlaps
+    the focal plane of an imaging system where light rays converge
+    at focal points. Thus we can trace the chief ray on an arbitrary
+    aperture by tracing the other light rays.
+    1. If the aperture overlaps with the focal plane, the chief ray
+       intersects the same location as the other light rays, i.e.,
+       U(x,y) = (u0,v0), for all (x,y).
+    2. Otherwise (u0,v0) = U(0,0) is determined by fitting U with
+       parameterized continuous transformation.
+
+    Linear transformation: translation, linear scaling and rotation.
+    Affine transformation is a special case of linear transformation.
+      U(x,y) = (ax+by+u0, cx+dy+v0).
     
+    """
+    npts = xi.size
+    A = np.zeros((2*npts, 6), dtype=xi.dtype)
+    b = np.empty((2*npts,  ), dtype=xi.dtype)
+    A[:npts,0] = xi.ravel()
+    A[:npts,1] = yi.ravel()
+    A[npts:,2] = xi.ravel()
+    A[npts:,3] = yi.ravel()
+    A[:npts,4] = 1.
+    A[npts:,5] = 1.
+    b[:npts  ] = ui.ravel()
+    b[npts:  ] = vi.ravel()
+    x,res,rank,s = np.linalg.lstsq(A, b)
+    return x,res,rank,s
+
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -1238,6 +1286,10 @@ class OpticalSystem(object):
 class OpticalPathNetwork(nx.classes.digraph.DiGraph):
     """An optical path network is a directed acyclic graph (DAG) that represents
     optical paths between components of a given optical system and a light source.
+    Provided that the underlying system is a simple beam compressing, imaging,
+    or beam combining system without optical cavity e.g., resonant cavity, ring-
+    down cavity, the optical path between its parts can be well modelled with a
+    DAG.
 
     Optical system high-level modelling and analysis tools:
     1. draw()           - optical path visualization
