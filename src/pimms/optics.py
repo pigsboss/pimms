@@ -24,7 +24,10 @@ sptype = np.dtype([
     ('position',   'f8', 3),
     ('direction',  'f8', 3),
     ('wavelength', 'f8'),
-    ('phase',      'f8')])
+    ('phase',      'f8'),
+    ('last_stop',  'i8')
+])
+
 # mirror sequence data type:
 mstype = 'int16'
 
@@ -168,6 +171,7 @@ class LightSource(object):
             np.sin(self.theta)*np.sin(self.phi),
             np.cos(self.theta)]) # unit vector from the origin to the source
         self.num_crosshairs = 8
+    
     def __call__(self, list_of_apertures, num_super_photons, dt, sampling='dizzle'):
         """Shed super photons onto mirrors.
 
@@ -368,8 +372,8 @@ class LightSource(object):
         sp_stop['wavelength'][:] = self.wavelength
         return sp_start[~miss_all], sp_stop[~miss_all]
 
-class SymmetricQuadricMirror(object):
-    """Symmetric quadric mirror model.
+class SymmetricQuadraticMirror(object):
+    """Symmetric quadratic mirror model.
 
     1. Plane mirror
     center of mirror is at origin.
@@ -433,7 +437,7 @@ class SymmetricQuadricMirror(object):
             is_entrance=False,
             is_detector=False
     ):
-        """Construct symmetric quadric mirror object.
+        """Construct symmetric quadratic mirror object.
 
         Arguments:
         d_in  - inside diameter.
@@ -580,17 +584,23 @@ class SymmetricQuadricMirror(object):
             plt.show()
         return tri, Z
     
-    def intersect(self, photon_in, profiling=False, min_corrections=2, max_corrections=5):
+    def intersect(
+            self,
+            photon_in,
+            profiling=False,
+            min_corrections=2,
+            max_corrections=5):
         """Find intersection of incident light ray and the mirror surface.
 
         Arguments:
         photon_in - incident photons
 
         Returns:
-        intersection - coordinate of the intersection, or (np.nan, np.nan, np.nan) if the intersection
-                       does not exist.
-        distance     - distance between the starting point and the intersection, or np.inf if the
-                       intersection does not exist.
+        intersection - coordinate of the intersection, in mirror fixed csys,
+                       or (np.nan, np.nan, np.nan) if the intersection does not
+                       exist.
+        distance     - distance between the starting point and the intersection,
+                       or np.inf if the intersection does not exist.
         """
         tic = time()
         # convert lab coordinates to mirror fixed coordinates.
@@ -605,7 +615,7 @@ class SymmetricQuadricMirror(object):
         # x = s[0] + u[0]*t,
         # y = s[1] + u[1]*t, and
         # z = s[2] + u[2]*t are linear equations, where t is distance between (x,y,z) and s.
-        # f(x,y,z) = 0 is quadric surface equation.
+        # f(x,y,z) = 0 is quadratic surface equation.
         # substitute x, y and z with t in surface equation:
         # a t^2 + b t + c = 0.
         # if the equation holds for t>0, it means that the light ray from the starting point s
@@ -748,25 +758,6 @@ class SymmetricQuadricMirror(object):
         Return:
         n   - unit normal vector in fixed csys.
         """
-        # r = quat.rotate(quat.conjugate(self.q), r-self.p)
-        # d={
-        #     'x2':self.coef['x2'],
-        #     'y2':self.coef['y2'],
-        #     'z2':self.coef['z2'],
-        #     'xy':self.coef['xy'],
-        #     'yz':self.coef['yz'],
-        #     'xz':self.coef['xz'],
-        #     'x' :self.coef['x' ],
-        #     'y' :self.coef['y' ],
-        #     'z' :self.coef['z' ],
-        #     'rx':r[0],
-        #     'ry':r[1],
-        #     'rz':r[2]
-        # }
-        # n = np.double([
-        #     ne.evaluate('x2*2.*rx+xy*ry+xz*rz+x', local_dict=d),
-        #     ne.evaluate('y2*2.*ry+xy*rx+yz*rz+y', local_dict=d),
-        #     ne.evaluate('z2*2.*rz+yz*ry+xz*rx+z', local_dict=d)])
         n = np.array([
             self.coef['x2']*2.*r[0]+self.coef['xy']*r[1]+self.coef['xz']*r[2]+self.coef['x'],
             self.coef['y2']*2.*r[1]+self.coef['xy']*r[0]+self.coef['yz']*r[2]+self.coef['y'],
@@ -797,7 +788,7 @@ class SymmetricQuadricMirror(object):
 
         Arguments:
         photon_in    - incident super photons, with position and direction vectors in lab csys.
-        intersection - corresponding intersections.
+        intersection - mirror fixed coordinates of corresponding intersections.
 
         Return:
         photon_out   - outcome super photons, with position and direction vectors in lab csys.
@@ -806,23 +797,23 @@ class SymmetricQuadricMirror(object):
         n = quat.rotate(self.q, self.normal(intersection)) # normal vector in lab csys
         phi_n, theta_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
         # attitude Euler's angles
-        phi_a   = np.where(theta_n>0., phi_n-np.pi, phi_n)
+        phi_a   = np.where(theta_n>0., phi_n-np.pi     , phi_n           )
         theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
-        q = quat.from_angles(phi_a, theta_a)
-        photon_out['weight'][:]     = photon_in['weight']
+        q  = quat.from_angles(phi_a, theta_a)
+        photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection)+self.p)
+        p  = np.transpose(photon_out['position'] - photon_in['position'])
+        u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
+        d  = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
+        tm = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
+        bm = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
+        v  = u.transpose()*np.where(d<0., tm, bm)
+        photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose()
+        photon_out['phase'     ][:] = photon_in['phase'] + 2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
+        photon_out['last_stop' ][:] = id(self)
+        photon_out['weight'    ][:] = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
-        photon_out['position'][:]   = np.transpose(quat.rotate(self.q, intersection)+self.p)
-        p = np.transpose(photon_out['position'] - photon_in['position'])
-        u = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
-        d = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
-        top_mask = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
-        bot_mask = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
-        v = u.transpose()*np.where(d<0., top_mask, bot_mask)
-        photon_out['direction'][:] = quat.rotate(q, v.transpose()).transpose()
-        photon_out['phase'][:]     = photon_in['phase'] + \
-            2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
-        photon_out['position'][:] += dm*photon_out['direction']
-        photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*dm, 2.*np.pi)
+        # photon_out['position'][:] += dm*photon_out['direction']
+        # photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*dm, 2.*np.pi)
         return photon_out
 
 class OpticalSystem(object):
@@ -892,7 +883,7 @@ class OpticalSystem(object):
         return parts
     
     def add_part(self, part):
-        """Append SymmetricQuadricMirror object to the current system.
+        """Append SymmetricQuadraticMirror object to the current system.
         """
         self.parts.append(part)
 
@@ -1140,7 +1131,7 @@ class OpticalSystem(object):
         parts     - list of all parts the light rays may encouter.
 
         Returns:
-        n - intersections, in lab csys.
+        n - intersections, in mirror fixed csys.
         t - optical path lengths between starting points and intersections.
         k - indices of mirror encountered.
         """
@@ -1153,11 +1144,12 @@ class OpticalSystem(object):
         t[:] = np.inf
         k[:] = -1
         for i in range(len(parts)):
-            ni, ti = parts[i].intersect(photon_in)
-            m = np.bool_(ti<t)
-            n[:] = np.where(m, ni, n)
-            t[:] = np.where(m, ti, t)
-            k[:] = np.where(m, self.parts.index(parts[i]), k)
+            escape = np.bool_(photon_in['last_stop']==id(parts[i]))
+            ni, ti = parts[i].intersect(photon_in[~escape])
+            m = np.bool_(ti<t[~escape])
+            n[:,~escape] = np.where(m, ni, n[:,~escape])
+            t[  ~escape] = np.where(m, ti, t[  ~escape])
+            k[  ~escape] = np.where(m, self.parts.index(parts[i]), k[~escape])
         return n, t, k
 
     def trace(self, photon_in, profiling=False):
@@ -1317,7 +1309,6 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             self,
             optical_system,
             light_source=None,
-            photon_trace=None,
             mirror_trace=None,
             title='',
             description=''):
@@ -1330,19 +1321,16 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         optical_system - Underlying physical entity of the optical path network.
         light_source   - Reference light source, default: point light source at (0,0,inf)
                          that emits planar wave along -Z axis.
-        photon_trace   - Super photon trace.
-                         each trace is tracked by a series of snapshots of the super photon
-                         as it encounters a PART of the optical system.
         mirror_trace   - Mirror trace corresponds to the photon trace.
         title          - Title of the network.
         description    - Additional comments on the network.
         """
         if light_source is None:
             light_source = LightSource((0., 0., np.inf))
-        if (photon_trace is None) or (mirror_trace is None):
+        if mirror_trace is None:
             # trace light rays from given light source
             p, q = light_source(optical_system.get_entrance(), 100, 1, sampling='random')
-            photon_trace, mirror_trace = optical_system.trace(q)
+            _, mirror_trace = optical_system.trace(q)
         super(OpticalPathNetwork, self).__init__(
             light_source=light_source,
             optical_system=optical_system,
@@ -1421,11 +1409,11 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
-        _,q = on_axis_source(self.entrance_nodes(), rays, 1., sampling='crosshair')
-        pt,mt = self.graph['optical_system'].trace_network(q, self)
+        _, q = on_axis_source(self.entrance_nodes(), rays, 1., sampling='crosshair')
+        _,mt = self.graph['optical_system'].trace_network(q, self)
         stops = [] # list of aperture stops
         from_parts = self.entrance_nodes()
-        nvtx, npts = pt.shape
+        nvtx, npts = mt.shape
         for l in range(1,nvtx-1):
             to_parts = []
             for fp in from_parts:
@@ -1621,7 +1609,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
     def exit_window(self):
         pass
             
-class Detector(SymmetricQuadricMirror):
+class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
     Geometrically a detector is a innerscribed square of an aperture of a given
     optical system. The aperture where the detector is installed is called its
@@ -1665,7 +1653,7 @@ class Detector(SymmetricQuadricMirror):
         self.photon_buffer = np.empty((0,), dtype=sptype)
 
     def encounter(self, photon_in, intersection):
-        """Overriding SymmetricQuadricMirror.encounter()
+        """Overriding SymmetricQuadraticMirror.encounter()
         """
         photon_out = super(Detector, self).encounter(photon_in, intersection)
         photon_det = np.copy(photon_out)
@@ -1711,15 +1699,15 @@ class CassegrainReflector(OpticalSystem):
         secondary_d    = primary_d_in + 2.*np.tan(optics_fov/2.)*f
         entrance_d_out = primary_d_out + 2.*np.tan(optics_fov/2.)*f
         entrance_d_in  = secondary_d
-        a0 = SymmetricQuadricMirror(
+        a0 = SymmetricQuadraticMirror(
             entrance_d_in, entrance_d_out,
             f=np.inf, g=np.inf, b=(-1,-1),
             is_entrance=True, is_virtual=True, name='E0')
-        m0 = SymmetricQuadricMirror(
+        m0 = SymmetricQuadraticMirror(
             primary_d_in, primary_d_out,
             f=primary_f, g=np.inf, b=(1,0),
             is_primary=True, name='M0')
-        m1 = SymmetricQuadricMirror(
+        m1 = SymmetricQuadraticMirror(
             0., secondary_d,
             f=secondary_f, g=secondary_g, b=(0,1),
             name='M1')
@@ -1743,10 +1731,10 @@ class PhotonCollector(OpticalSystem):
         secondary_d    = primary_d_in + 2.*np.tan(fov*.5)*f
         entrance_d_out = primary_d_out + 2.*np.tan(fov*.5)*f
         entrance_d_in  = secondary_d
-        a0 = SymmetricQuadricMirror(entrance_d_in, entrance_d_out, f=np.inf,      b=(-1,-1), g=np.inf, is_entrance=True, is_virtual=True)
-        m0 = SymmetricQuadricMirror(primary_d_in,  primary_d_out,  f=primary_f,   b=( 1, 0), g=np.inf, is_primary=True)
-        m1 = SymmetricQuadricMirror(0,             secondary_d,    f=secondary_f, b=( 0, 1), g=np.inf)
-        m2 = SymmetricQuadricMirror(0,             secondary_d*2., f=np.inf,      b=( 1, 0), g=np.inf, p=[0., 0., -primary_f-2*secondary_d], q=quat.from_angles(0., -np.pi/4.))
+        a0 = SymmetricQuadraticMirror(entrance_d_in, entrance_d_out, f=np.inf,      b=(-1,-1), g=np.inf, is_entrance=True, is_virtual=True)
+        m0 = SymmetricQuadraticMirror(primary_d_in,  primary_d_out,  f=primary_f,   b=( 1, 0), g=np.inf, is_primary=True)
+        m1 = SymmetricQuadraticMirror(0,             secondary_d,    f=secondary_f, b=( 0, 1), g=np.inf)
+        m2 = SymmetricQuadraticMirror(0,             secondary_d*2., f=np.inf,      b=( 1, 0), g=np.inf, p=[0., 0., -primary_f-2*secondary_d], q=quat.from_angles(0., -np.pi/4.))
         self.add_part(a0)
         self.add_part(m0)
         self.add_part(m1)
@@ -1859,14 +1847,14 @@ class SIM(OpticalSystem):
         m7_d = max(
             beam_d+2.*np.tan(.5*optics_fov)*m7_f,
             m6_d_in+2.*np.tan(.5*optics_fov)*combiner_f)
-        m30 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[-m6_d_out*.5-.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0.,  np.pi/4.), name='M30')
-        m31 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(1,0), p=[ m6_d_out*.5+.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0., -np.pi/4.), name='M31')
-        m40 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-m6_d_out*.5-.5*m3_d, 0., 0.], q=quat.from_angles(0.,  np.pi/4.), name='M40')
-        m41 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ m6_d_out*.5+.5*m3_d, 0., 0.], q=quat.from_angles(0., -np.pi/4.), name='M41')
-        m50 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[-combiner_b*.5, 0., 0.], q=quat.from_angles(0., -np.pi/4.), name='M50')
-        m51 = SymmetricQuadricMirror(0., m3_d, f=np.inf, g=np.inf, b=(0,1), p=[ combiner_b*.5, 0., 0.], q=quat.from_angles(0.,  np.pi/4.), name='M51')
-        m6  = SymmetricQuadricMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True, name='M6')
-        m7  = SymmetricQuadricMirror(0., m7_d, f=m7_f, g=m7_g, b=(0,1), name='M7')
+        m30 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(1,0), p=[-m6_d_out*.5-.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0.,  np.pi/4.), name='M30')
+        m31 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(1,0), p=[ m6_d_out*.5+.5*m3_d, 0., -combiner_f-m3_d], q=quat.from_angles(0., -np.pi/4.), name='M31')
+        m40 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(0,1), p=[-m6_d_out*.5-.5*m3_d, 0.,               0.], q=quat.from_angles(0.,  np.pi/4.), name='M40')
+        m41 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(0,1), p=[ m6_d_out*.5+.5*m3_d, 0.,               0.], q=quat.from_angles(0., -np.pi/4.), name='M41')
+        m50 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(0,1), p=[      -combiner_b*.5, 0.,               0.], q=quat.from_angles(0., -np.pi/4.), name='M50')
+        m51 = SymmetricQuadraticMirror(0.,      m3_d,     f=np.inf,     g=np.inf, b=(0,1), p=[       combiner_b*.5, 0.,               0.], q=quat.from_angles(0.,  np.pi/4.), name='M51')
+        m6  = SymmetricQuadraticMirror(m6_d_in, m6_d_out, f=combiner_f, g=np.inf, b=(1,0), is_primary=True,                                                                   name='M6' )
+        m7  = SymmetricQuadraticMirror(0.,      m7_d,     f=m7_f,       g=m7_g,   b=(0,1),                                                                                    name='M7' )
         d0  = Detector(a=detector_a, N=detector_n, p=[0., 0., m7_g-m7_f], name='D0')
         # periscope between combiner and collector 0
         pr0 = OpticalSystem()
