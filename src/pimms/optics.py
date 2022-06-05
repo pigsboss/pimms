@@ -1394,6 +1394,16 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             plt.savefig(output)
             plt.close()
 
+    def photons_from(self, part, photon_trace, mirror_trace):
+        """Get photons from given node to its successor in the network.
+        
+        """
+        pass
+    def photons_to(self, part, photon_trace, mirror_trace):
+        """Get photons to given node from its predecessor in the network.
+        """
+        pass
+    
     def entrance_nodes(self):
         """Get entrance nodes if there is any.
         An entrance node get photons directly and only from the light source.
@@ -1416,8 +1426,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         return nodes
 
     def aperture_stop(self, on_axis_source=None, rays=1000):
-        """Find all aperture stop(s) as well as effective area of the underlying
-        optical system.
+        """Find all aperture stop(s) of the underlying optical system.
 
         Arguments:
         on_axis_source - The on-axis light source. The aperture stop limits the
@@ -1428,15 +1437,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
 
         Returns:
         stops - list of aperture stops
-        area  - effective area, in m2
         """
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
         dt = 1.
         _, q = on_axis_source(self.entrance_nodes(), rays, dt, sampling='random')
         _,mt = self.graph['optical_system'].trace_network(q, self)
-        area = np.sum(hc/q[mt[-1]>=0]['wavelength']*q[mt[-1]>=0]['weight']) / \
-            on_axis_source.intensity/dt
         stops = [] # list of aperture stops
         from_parts = self.entrance_nodes()
         nvtx, npts = mt.shape
@@ -1450,16 +1456,52 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 if np.any(mt[l+1,mfp]==-1):
                     stops += sub_to_parts
             from_parts = to_parts
-        return stops, area
+        return stops
+    
+    def effective_area(self, test_source=None, rays=1000):
+        """Estimate effective area of the underlying optical system.
+
+        Arguments:
+        test_source - Test light source. The aperture stop limits the
+                      marginal rays from an on-axis light source by definition.
+                      Default: the light source used to construct the optical
+                      path network, i.e., self.graph['light_source'].
+        rays        - Number of test rays (Default: 1,000).
+
+        Returns:
+        area  - effective area, in m2
+        """
+        if test_source is None:
+            test_source = self.graph['light_source']
+        dt = 1.
+        _, q = test_source(self.entrance_nodes(), rays, dt, sampling='random')
+        _,mt = self.graph['optical_system'].trace_network(q, self)
+        area = np.sum(hc/q[mt[-1]>=0]['wavelength']*q[mt[-1]>=0]['weight']) / \
+            test_source.intensity/dt
+        return area
  
     def field_stop(
             self,
             init_fov=np.deg2rad(1.),
+            num_spokes=4,
+            batch_rays=100,
             min_precision=np.deg2rad(1./3600.)):
         """Find field stop(s) as well as field of view of the underlying optical
         system.
         """
-        pass
+        spokes_az   = np.arange(num_spokes)*2.*np.pi/num_spokes # azimuthal angles of FoV spokes
+        spokes_zmin = np.zeros((num_spokes, ))                  # initial min zenith angles of FoV spokes
+        spokes_zmax = np.ones((num_spokes, ))*init_fov/2.       # initial max zenith angles of FoV spokes
+        delta_z     = spokes_zmax - spokes_zmin                 # initial ranges of zenith angles of FoV spokes
+        optics      = self.graph['optical_system']              # underlying optical system
+        astops      = self.aperture_stop()                      # list of aperture stops of optical system
+        while np.any(delta_z>min_precision):
+            for i in range(num_spokes):
+                # construct test light source for the i-th spoke
+                src = LightSource((spokes_az[i], (spokes_zmin[i]+spokes_zmax[i])/2., np.inf))
+                p,q = src(optics.get_entrance(), batch_rays, 1., sampling='random')
+                pt,mt = optics.trace_network(q, self)
+                
     
     def find_image(
             self,
