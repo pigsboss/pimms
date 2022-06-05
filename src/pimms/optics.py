@@ -210,12 +210,13 @@ class LightSource(object):
             area   = 0. # total area of exit pupil
             for aperture in list_of_apertures:
                 norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
-                sin_alpha = np.linalg.norm(np.cross(self.direction, norm_aperture, axis=0))
+                cos_alpha = np.sum(self.direction.ravel()*norm_aperture.ravel())
+                sin_alpha = (1.-cos_alpha**2.)**.5
                 # displacement from the center of the aperture to the equi-phase plane passing the origin, i.e.,
                 # (x,y,z) dot self.direction = 0, along the direction towards the source.
                 t = -aperture.p[0]*self.direction[0]-aperture.p[1]*self.direction[1]-aperture.p[2]*self.direction[2]
                 op.append(t-aperture.d_out*sin_alpha*.5)
-                area += np.pi*(aperture.d_out**2.-aperture.d_in**2.)/4.*sin_alpha
+                area += np.pi*(aperture.d_out**2.-aperture.d_in**2.)/4.*cos_alpha
             opm = np.min(op) # minimum optical path
             u = []
             for aperture in list_of_apertures:
@@ -484,6 +485,7 @@ class SymmetricQuadraticMirror(object):
                 'z' :1.,
                 'c' :0.
             }
+            self.depth = 0.
         elif np.isinf(self.g):
             # parabolic mirror
             self.coef = {
@@ -498,6 +500,7 @@ class SymmetricQuadraticMirror(object):
                 'z' :-4.*self.f,
                 'c' :-4.*self.f**2.
             }
+            self.depth = self.d_out**2./16./self.f # height from bottom to the edge
         elif self.g<0.:
             # hyperbolic mirror
             a = (self.f+self.g)*.5
@@ -514,6 +517,7 @@ class SymmetricQuadraticMirror(object):
                 'z' :2.*(a**2.-c**2.)*c/a**2.,
                 'c' :-(a**2.-c**2.)**2./a**2.
             }
+            self.depth = a*(1.-(1.-self.d_out**2./16./(a**2.-c**2.))**.5)
         elif self.g>0.:
             # elliptical mirror
             a = (self.f+self.g)*.5
@@ -530,6 +534,7 @@ class SymmetricQuadraticMirror(object):
                 'z' :2.*(a**2.-c**2.)*c/a**2.,
                 'c' :-(a**2.-c**2.)**2./a**2.
             }
+            self.depth = a*(1.-(1.-self.d_out**2./16./(a**2.-c**2.))**.5)
 
     def draw(self, nside=32, axes=None, return_only=False, **kwargs):
         """Draw triangulated 3D surface plot of the mirror in lab csys.
@@ -791,30 +796,44 @@ class SymmetricQuadraticMirror(object):
         intersection - mirror fixed coordinates of corresponding intersections.
 
         Return:
-        photon_out   - outcome super photons, with position and direction vectors in lab csys.
+        photon_out   - snapshots of outgoing photons on mirror surface, in lab csys.
         """
-        photon_out = np.empty_like(photon_in)
-        n = quat.rotate(self.q, self.normal(intersection)) # normal vector in lab csys
-        phi_n, theta_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
-        # attitude Euler's angles
-        phi_a   = np.where(theta_n>0., phi_n-np.pi     , phi_n           )
-        theta_a = np.where(theta_n>0., np.pi/2.-theta_n, np.pi/2.+theta_n)
-        q  = quat.from_angles(phi_a, theta_a)
-        photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection)+self.p)
-        p  = np.transpose(photon_out['position'] - photon_in['position'])
-        u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose())
-        d  = np.reshape(p[0]*n[0] + p[1]*n[1] + p[2]*n[2], (-1, 1))
+        m = self.normal(intersection)
+        n = quat.rotate(self.q, m)    # normal vectors at intersections in lab csys
+        s = quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p) # starting points of incoming photon in fixed csys
+        lon_n, lat_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
+        lon_a = np.where(lat_n>0.,  lon_n-np.pi   , lon_n         )
+        lat_a = np.where(lat_n>0., -lat_n+np.pi/2., lat_n+np.pi/2.)
+        q  = quat.from_angles(lon_a, lat_a) # quaternion convert coordinates from local tangent csys to lab csys
+        p  = intersection - s # displacement from source to intersection, in fixed csys
+        u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose()) # direction vector of incoming photon in local tangent csys
+        d  = np.reshape(m[0]*p[0]+m[1]*p[1]+m[2]*p[2], (-1, 1))
         tm = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
         bm = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
-        v  = u.transpose()*np.where(d<0., tm, bm)
-        photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose()
-        photon_out['phase'     ][:] = photon_in['phase'] + 2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength']
+        v  = u.transpose()*np.where(d<0., tm, bm) # outgoing direction vector in local tangent csys
+        photon_out  = np.copy(photon_in)
+        photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection) + self.p)
+        photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose() # outgoing direction in lab csys
+        photon_out['phase'     ][:] = np.mod(photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'], 2.*np.pi)
         photon_out['last_stop' ][:] = id(self)
         photon_out['weight'    ][:] = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
-        # photon_out['position'][:] += dm*photon_out['direction']
-        # photon_out['phase'][:]     = np.mod(photon_out['phase'][:]+2.*np.pi*dm, 2.*np.pi)
         return photon_out
+
+    def aperture_projection(self, photon_src):
+        """Find projection of source photons on the aperture plane.
+        Aperture plane of a specified mirror is the xOy plane of its
+        fixed coordinate system.
+        """
+        s = quat.rotate(quat.conjugate(self.q), photon_src['position' ].transpose()-self.p) # position in fixed csys
+        u = quat.rotate(quat.conjugate(self.q), photon_src['direction'].transpose())        # direction in fixed csys
+        t = -s[2]/u[2] # displacement from source to projection on aperture plane
+        photon_pro = np.copy(photon_src)
+        photon_pro['position' ][:] = np.transpose(s+u*t)
+        photon_pro['direction'][:] = np.transpose(u)
+        photon_pro['phase'    ][:] = np.mod(photon_src['phase']+2.*np.pi*t/photon_src['wavelength'], 2.*np.pi)
+        return photon_pro
+        
 
 class OpticalSystem(object):
     """Optical system.
@@ -1127,8 +1146,8 @@ class OpticalSystem(object):
         """Find intersections of incident light rays and the mirrors.
 
         Arguments:
-        photon_in - incident super photons.
-        parts     - list of all parts the light rays may encouter.
+        photon_in        - incident super photons.
+        parts            - list of all parts the light rays may encounter.
 
         Returns:
         n - intersections, in mirror fixed csys.
@@ -1160,7 +1179,7 @@ class OpticalSystem(object):
         profiling - print simple profiling messages or not
 
         Returns:
-        photon_trace - photon trace at each step
+        photon_trace - photon snapshots on mirror surface at each step
         mirror_trace - optical parts encountered at each step
 
         Both photon_trace and mirror_trace are numpy array
@@ -1195,11 +1214,10 @@ class OpticalSystem(object):
             m = np.isinf(t)
             spbuf[m] = photon_trace[i][m]
             hits = np.bincount(k[~m], minlength=len(self.parts))
-            for l in range(len(self.parts)):
+            for j in np.unique(k[~m]):
                 tic = time()
-                if hits[l]>0:
-                    m = np.bool_(k==l)
-                    spbuf[m] = self.parts[l].encounter(photon_trace[i][m], n[:, m])
+                mj = np.bool_(k==j)
+                spbuf[mj] = self.parts[j].encounter(photon_trace[i][mj], n[:,mj])
                 if profiling:
                     toc = time()-tic
                     print('computing outcomes: {:f} seconds'.format(toc))
@@ -1245,7 +1263,7 @@ class OpticalSystem(object):
         max_length = 0
         for p in paths:
             max_length = max(max_length, len(p))
-        nvtx = max_length + 1
+        nvtx = max(max_length + 1, 2)
         npts = photon_in.size
         photon_trace      = np.empty((nvtx, npts), dtype=sptype)
         mirror_trace      = np.empty((nvtx, npts), dtype=mstype)
@@ -1398,7 +1416,8 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         return nodes
 
     def aperture_stop(self, on_axis_source=None, rays=1000):
-        """Find all aperture stop(s) of the underlying optical system.
+        """Find all aperture stop(s) as well as effective area of the underlying
+        optical system.
 
         Arguments:
         on_axis_source - The on-axis light source. The aperture stop limits the
@@ -1406,11 +1425,18 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                          Default: the light source used to construct the optical
                          path network, i.e., self.graph['light_source'].
         rays           - Number of rays (Default: 1,000).
+
+        Returns:
+        stops - list of aperture stops
+        area  - effective area, in m2
         """
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
-        _, q = on_axis_source(self.entrance_nodes(), rays, 1., sampling='crosshair')
+        dt = 1.
+        _, q = on_axis_source(self.entrance_nodes(), rays, dt, sampling='random')
         _,mt = self.graph['optical_system'].trace_network(q, self)
+        area = np.sum(hc/q[mt[-1]>=0]['wavelength']*q[mt[-1]>=0]['weight']) / \
+            on_axis_source.intensity/dt
         stops = [] # list of aperture stops
         from_parts = self.entrance_nodes()
         nvtx, npts = mt.shape
@@ -1424,9 +1450,15 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 if np.any(mt[l+1,mfp]==-1):
                     stops += sub_to_parts
             from_parts = to_parts
-        return stops
+        return stops, area
  
-    def field_stop(self):
+    def field_stop(
+            self,
+            init_fov=np.deg2rad(1.),
+            min_precision=np.deg2rad(1./3600.)):
+        """Find field stop(s) as well as field of view of the underlying optical
+        system.
+        """
         pass
     
     def find_image(
@@ -1481,8 +1513,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             all_successors += [node for node in self.successors(obj)]
         # all direct predecessors of exit nodes
         all_predecessors = []
-        for obj in exit_nodes:
-            all_predecessors += [node for node in self.predecessors(obj)]
+        if end_of_image.lower()=='entrance':
+            for obj in list_of_objects:
+                all_predecessors += [node for node in self.predecessors(obj)]
+        else:
+            for obj in exit_nodes:
+                all_predecessors += [node for node in self.predecessors(obj)]
         # number of collected samplings
         num_samplings = 0
         # list of samplings per batch
@@ -1518,7 +1554,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             pt0, mt0 = optics.trace_network(
                 q, self,
                 starts=entrance_nodes,
-                stops=all_predecessors) # forward raytracing
+                stops=list_of_objects) # forward raytracing
             p0, m0 = filter_trace(pt0, mt0, objidx)
             p = p0[m0>=0]
             if p.size==0:
@@ -1537,7 +1573,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             if end_of_image.lower()=='entrance':
                 pt1, mt1 = optics.trace_network(
                     p, self, reverse=True,
-                    starts=list_of_objects,
+                    starts=all_predecessors,
                     stops=entrance_nodes)
                 p1, m1 = filter_trace(pt1, mt1, entidx)
                 m1 = np.bool_(m1>=0)
