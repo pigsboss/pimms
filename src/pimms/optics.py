@@ -1396,9 +1396,20 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
 
     def photons_from(self, part, photon_trace, mirror_trace):
         """Get photons from given node to its successor in the network.
-        
+
+        Since the optical path network is directed acyclic graph, an
+        optical path passes each node at-most once.
         """
-        pass
+        # 1. Find all paths from entrance to the object part as well as
+        #    the position of the object part on each path.
+        pos = []
+        for ent in self.entrance_nodes:
+            for p in nx.all_simple_paths(self, ent, part):
+                pos.append(p.index(part))
+        return pos
+        
+        
+    
     def photons_to(self, part, photon_trace, mirror_trace):
         """Get photons to given node from its predecessor in the network.
         """
