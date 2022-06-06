@@ -145,7 +145,7 @@ def find_chiefray(xi, yi, ui, vi):
     u0  = x[-2]
     v0  = x[-1]
     T   = np.array([[x[0], x[1]],[x[2], x[3]]])
-    rms = (res/n)**.5
+    rms = (np.squeeze(res)/n)**.5
     return u0,v0,T,rms
 
 class LightSource(object):
@@ -824,6 +824,12 @@ class SymmetricQuadraticMirror(object):
         """Find projection of source photons on the aperture plane.
         Aperture plane of a specified mirror is the xOy plane of its
         fixed coordinate system.
+
+        Argument:
+        photon_src  - source photons, position and direction in lab csys
+
+        Returns:
+        photon_pro  - projected photons, position and direction in fixed csys
         """
         s = quat.rotate(quat.conjugate(self.q), photon_src['position' ].transpose()-self.p) # position in fixed csys
         u = quat.rotate(quat.conjugate(self.q), photon_src['direction'].transpose())        # direction in fixed csys
@@ -1399,22 +1405,61 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
 
         Since the optical path network is directed acyclic graph, an
         optical path passes each node at-most once.
+
+        Arguments:
+        part         - Object part.
+        photon_trace - End-to-end trace of photons returned by OpticalSystem.trace_network().
+        mirror_trace - End-to-end trace of mirrors returned by OpticalSystem.trace_network().
+        
+        Returns:
+        p - Photons retrieved from photon_trace.
+        s - Steps where photons are retrieved.
         """
-        # 1. Find all paths from entrance to the object part as well as
-        #    the position of the object part on each path.
-        pos = []
-        for ent in self.entrance_nodes:
-            for p in nx.all_simple_paths(self, ent, part):
-                pos.append(p.index(part))
-        return pos
-        
-        
+        entrances = self.entrance_nodes()
+        if part in entrances:
+            pos = [0]
+        else:
+            pos = []
+            for ent in self.entrance_nodes():
+                for p in nx.all_simple_paths(self, ent, part):
+                    pos.append(p.index(part))
+        nvtx, npts = mirror_trace.shape
+        p = np.empty((npts,), dtype=sptype)
+        s = np.zeros((npts,), dtype=mstype)
+        s[:] = -1
+        k = self.graph['optical_system'].parts.index(part)
+        for i in pos:
+            mk = np.bool_(mirror_trace[i+1,:]==k)
+            p[mk] = photon_trace[i+1,mk]
+            s[mk] = i+1
+        return p, s
     
     def photons_to(self, part, photon_trace, mirror_trace):
         """Get photons to given node from its predecessor in the network.
+
+        Since the optical path network is directed acyclic graph, an
+        optical path passes each node as well as each of its predecessors
+        at-most once.
+
+        Arguments:
+        part         - Object part.
+        photon_trace - End-to-end trace of photons returned by OpticalSystem.trace_network().
+        mirror_trace - End-to-end trace of mirrors returned by OpticalSystem.trace_network().
+        
+        Returns:
+        p - Photons retrieved from photon_trace.
+        m - Part index of node where photons are emanated.
         """
-        pass
-    
+        nvtx, npts = mirror_trace.shape
+        p = np.empty((npts, ), dtype=sptype)
+        m = np.zeros((npts, ), dtype=mstype)
+        m[:] = -1
+        for predecessor in self.predecessors(part):
+            pp, s = self.photons_from(predecessor, photon_trace, mirror_trace)
+            p[s>=0] = pp[s>=0]
+            m[s>=0] = self.graph['optical_system'].parts.index(predecessor)
+        return p, m
+        
     def entrance_nodes(self):
         """Get entrance nodes if there is any.
         An entrance node get photons directly and only from the light source.
@@ -1496,7 +1541,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             init_fov=np.deg2rad(1.),
             num_spokes=4,
             batch_rays=100,
-            min_precision=np.deg2rad(1./3600.)):
+            min_precision=np.deg2rad(1./3600.),
+            min_rays=12,
+            verbose=False):
         """Find field stop(s) as well as field of view of the underlying optical
         system.
         """
@@ -1506,13 +1553,70 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         delta_z     = spokes_zmax - spokes_zmin                 # initial ranges of zenith angles of FoV spokes
         optics      = self.graph['optical_system']              # underlying optical system
         astops      = self.aperture_stop()                      # list of aperture stops of optical system
+        exits       = self.exit_nodes()                         # list of exits of optical system
+        fstops      = []
         while np.any(delta_z>min_precision):
+            new_fstops = []
             for i in range(num_spokes):
                 # construct test light source for the i-th spoke
-                src = LightSource((spokes_az[i], (spokes_zmin[i]+spokes_zmax[i])/2., np.inf))
+                chief_lost = False
+                zen = (spokes_zmin[i]+spokes_zmax[i])/2.
+                src = LightSource((spokes_az[i], zen, np.inf))
                 p,q = src(optics.get_entrance(), batch_rays, 1., sampling='random')
                 pt,mt = optics.trace_network(q, self)
-                
+                for astop in astops:
+                    p0,m0 = self.photons_to(astop, pt, mt)
+                    # trace photons from aperture stop to the exit of the optical system
+                    p0_ap = np.empty_like(p0) # aperture projection of photons go to aperture stop
+                    p0_ap[m0>=0] = astop.aperture_projection(p0[m0>=0])
+                    nodes = [node for node in self.successors(astop)]
+                    while len(nodes)>0:
+                        next_nodes = []
+                        have_chief = False
+                        # find chief ray in current nodes
+                        for curr_node in nodes:
+                            next_nodes += [node for node in self.successors(curr_node)]
+                            has_chief = False
+                            p1,m1 = self.photons_to(curr_node, pt, mt)
+                            p1_ap = np.empty_like(p1)
+                            p1_ap[m1>=0] = curr_node.aperture_projection(p1[m1>=0])
+                            m01 = (m0>=0) & (m1>=0)
+                            if np.sum(m01)>=min_rays:
+                                u0,v0,_,rms  = find_chiefray(
+                                    p0_ap[m01]['position'][:,0],
+                                    p0_ap[m01]['position'][:,1],
+                                    p1_ap[m01]['position'][:,0],
+                                    p1_ap[m01]['position'][:,1])
+                                lstsq_msg = "(u0={:.2E}, v0={:.2E}, RMS={:.2E})".format(u0, v0, rms)
+                                if ((u0**2.+v0**2.)**.5)<(curr_node.d_out/2.):
+                                    has_chief = True
+                            else:
+                                lstsq_msg = "({:d} rays not enough)".format(np.sum(m01))
+                            if has_chief:
+                                verb = 'hits'
+                                have_chief = True
+                            else:
+                                verb = 'misses'
+                                if curr_node not in new_fstops:
+                                    new_fstops.append(curr_node)
+                            if verbose:
+                                print("Spoke {:4.0f} deg, Zenith {:.2E} deg, Chief ray passes aperture stop {:d} ({}) {} {} stop {:d} ({}).".format(
+                                    np.rad2deg(spokes_az[i]), np.rad2deg(zen),
+                                    optics.parts.index(astop), astop.name,
+                                    verb, lstsq_msg,
+                                    optics.parts.index(curr_node), curr_node.name))
+                        if have_chief:
+                            nodes = next_nodes
+                        else:
+                            chief_lost = True
+                            break
+                if chief_lost:
+                    spokes_zmax[i] = zen
+                    fstops = new_fstops
+                else:
+                    spokes_zmin[i] = zen
+            delta_z = spokes_zmax - spokes_zmin
+        return fstops, spokes_az, spokes_zmin, spokes_zmax
     
     def find_image(
             self,
