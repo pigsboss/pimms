@@ -1565,10 +1565,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 p,q = src(optics.get_entrance(), batch_rays, 1., sampling='random')
                 pt,mt = optics.trace_network(q, self)
                 for astop in astops:
-                    p0,m0 = self.photons_to(astop, pt, mt)
+                    p0,m0 = self.photons_from(astop, pt, mt)
                     # trace photons from aperture stop to the exit of the optical system
-                    p0_ap = np.empty_like(p0) # aperture projection of photons go to aperture stop
-                    p0_ap[m0>=0] = astop.aperture_projection(p0[m0>=0])
+                    #p0_ap = np.empty_like(p0) # photons on aperture stop
+                    #p0_ap[m0>=0] = astop.aperture_projection(p0[m0>=0])
                     nodes = [node for node in self.successors(astop)]
                     while len(nodes)>0:
                         next_nodes = []
@@ -1577,16 +1577,14 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                         for curr_node in nodes:
                             next_nodes += [node for node in self.successors(curr_node)]
                             has_chief = False
-                            p1,m1 = self.photons_to(curr_node, pt, mt)
-                            p1_ap = np.empty_like(p1)
-                            p1_ap[m1>=0] = curr_node.aperture_projection(p1[m1>=0])
+                            p1,m1 = self.photons_from(curr_node, pt, mt)
+                            #p1_ap = np.empty_like(p1)
+                            #p1_ap[m1>=0] = curr_node.aperture_projection(p1[m1>=0])
                             m01 = (m0>=0) & (m1>=0)
+                            r0  = quat.rotate(quat.conjugate(astop.q),     p0[m01]['position'].transpose()-astop.p)
+                            r1  = quat.rotate(quat.conjugate(curr_node.q), p1[m01]['position'].transpose()-curr_node.p)
                             if np.sum(m01)>=min_rays:
-                                u0,v0,_,rms  = find_chiefray(
-                                    p0_ap[m01]['position'][:,0],
-                                    p0_ap[m01]['position'][:,1],
-                                    p1_ap[m01]['position'][:,0],
-                                    p1_ap[m01]['position'][:,1])
+                                u0,v0,_,rms  = find_chiefray(r0[0],r0[1],r1[0],r1[1])
                                 lstsq_msg = "(u0={:.2E}, v0={:.2E}, RMS={:.2E})".format(u0, v0, rms)
                                 if ((u0**2.+v0**2.)**.5)<(curr_node.d_out/2.):
                                     has_chief = True
