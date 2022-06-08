@@ -371,6 +371,8 @@ class LightSource(object):
         sp_stop['phase'][~miss_all] = 2.*np.pi*np.mod(sp_dist[~miss_all], self.wavelength)/self.wavelength
         sp_start['wavelength'][:] = self.wavelength
         sp_stop['wavelength'][:] = self.wavelength
+        sp_start['last_stop'][:] = 0
+        sp_stop['last_stop'][:] = 0
         return sp_start[~miss_all], sp_stop[~miss_all]
 
 class SymmetricQuadraticMirror(object):
@@ -798,29 +800,32 @@ class SymmetricQuadraticMirror(object):
         Return:
         photon_out   - snapshots of outgoing photons on mirror surface, in lab csys.
         """
-        m = self.normal(intersection)
-        n = quat.rotate(self.q, m)    # normal vectors at intersections in lab csys
-        s = quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p) # starting points of incoming photon in fixed csys
-        lon_n, lat_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
-        lon_a = np.where(lat_n>0.,  lon_n-np.pi   , lon_n         )
-        lat_a = np.where(lat_n>0., -lat_n+np.pi/2., lat_n+np.pi/2.)
-        q  = quat.from_angles(lon_a, lat_a) # quaternion convert coordinates from local tangent csys to lab csys
-        p  = intersection - s # displacement from source to intersection, in fixed csys
-        u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose()) # direction vector of incoming photon in local tangent csys
-        d  = np.reshape(m[0]*p[0]+m[1]*p[1]+m[2]*p[2], (-1, 1))
-        tm = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
-        bm = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
-        v  = u.transpose()*np.where(d<0., tm, bm) # outgoing direction vector in local tangent csys
         photon_out  = np.copy(photon_in)
-        photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection) + self.p)
-        photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose() # outgoing direction in lab csys
-        photon_out['phase'     ][:] = np.mod(photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'], 2.*np.pi)
         photon_out['last_stop' ][:] = id(self)
         photon_out['weight'    ][:] = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
+        photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection) + self.p)
+        s = quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p) # starting points of incoming photon in fixed csys
+        p = intersection - s # displacement from source to intersection, in fixed csys
+        photon_out['phase'     ][:] = np.mod(photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'], 2.*np.pi)
+        if self.is_virtual:
+            photon_out['direction'][:] = photon_in['direction']
+        else:
+            m = self.normal(intersection)
+            n = quat.rotate(self.q, m)    # normal vectors at intersections in lab csys
+            lon_n, lat_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
+            lon_a = np.where(lat_n>0.,  lon_n-np.pi   , lon_n         )
+            lat_a = np.where(lat_n>0., -lat_n+np.pi/2., lat_n+np.pi/2.)
+            q  = quat.from_angles(lon_a, lat_a) # quaternion convert coordinates from local tangent csys to lab csys
+            u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose()) # direction vector of incoming photon in local tangent csys
+            d  = np.reshape(m[0]*p[0]+m[1]*p[1]+m[2]*p[2], (-1, 1))
+            tm = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
+            bm = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
+            v  = u.transpose()*np.where(d<0., tm, bm) # outgoing direction vector in local tangent csys
+            photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose() # outgoing direction in lab csys
         return photon_out
 
-    def aperture_projection(self, photon_src):
+    def aperture_projection(self, photon_src, z=0):
         """Find projection of source photons on the aperture plane.
         Aperture plane of a specified mirror is the xOy plane of its
         fixed coordinate system.
@@ -833,7 +838,7 @@ class SymmetricQuadraticMirror(object):
         """
         s = quat.rotate(quat.conjugate(self.q), photon_src['position' ].transpose()-self.p) # position in fixed csys
         u = quat.rotate(quat.conjugate(self.q), photon_src['direction'].transpose())        # direction in fixed csys
-        t = -s[2]/u[2] # displacement from source to projection on aperture plane
+        t = (z-s[2])/u[2] # displacement from source to projection on aperture plane
         photon_pro = np.copy(photon_src)
         photon_pro['position' ][:] = np.transpose(s+u*t)
         photon_pro['direction'][:] = np.transpose(u)
@@ -1702,15 +1707,24 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 raise RuntimeError(
                     "Limit max_batches reached." + \
                     " Try increase max_batches or decrease min_samplings.")
+            # sampled super photons from on-axis source
             _, q = on_axis_source(
                 entrance_nodes,
                 batch_rays, 1.,
-                sampling='random') # sampled super photons from on-axis source
-            pt0, mt0 = optics.trace_network(
-                q, self,
-                starts=entrance_nodes,
-                stops=list_of_objects) # forward raytracing
-            p0, m0 = filter_trace(pt0, mt0, objidx)
+                sampling='random')
+            # forward raytracing
+            pt0, mt0 = optics.trace_network(q, self)
+            # find photons hit the object parts
+            pt1 = np.empty_like(pt0[0])
+            pt2 = np.empty_like(pt0[0])
+            st1 = np.empty_like(mt0[0])
+            for obj in list_of_objects:
+                p,s = self.photons_to(obj, pt0, mt0)
+                n,k = obj.intersect(p[s>=0])
+                
+                pt1[s>=0] = p[s>=0]
+                st1[s>=0] = s[s>=0]
+            
             p = p0[m0>=0]
             if p.size==0:
                 raise RuntimeError("No ray traced on objects.")
