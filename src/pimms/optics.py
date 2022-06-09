@@ -809,8 +809,10 @@ class SymmetricQuadraticMirror(object):
         p = intersection - s # displacement from source to intersection, in fixed csys
         photon_out['phase'     ][:] = np.mod(photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'], 2.*np.pi)
         if self.is_virtual:
+            # pass-through virtual mirror (optical parts)
             photon_out['direction'][:] = photon_in['direction']
         else:
+            # determine direction after encounter
             m = self.normal(intersection)
             n = quat.rotate(self.q, m)    # normal vectors at intersections in lab csys
             lon_n, lat_n, _ = quat.xyz2ptr(n[0], n[1], n[2]) # longtitude and latitude of normal vector in lab csys
@@ -1719,11 +1721,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             pt2 = np.empty_like(pt0[0])
             st1 = np.empty_like(mt0[0])
             for obj in list_of_objects:
-                p,s = self.photons_to(obj, pt0, mt0)
-                n,k = obj.intersect(p[s>=0])
-                
+                p0,s0 = self.photons_to(obj, pt0, mt0)   # photons go to the object part
+                p1,s1 = self.photons_from(obj, pt0, mt0) # photons come from the object part
                 pt1[s>=0] = p[s>=0]
                 st1[s>=0] = s[s>=0]
+                pt2[s>=0]['position' ] = p1[s>=0]['position' ]
+                pt2[s>=0]['direction'] = p0[s>=0]['direction']
             
             p = p0[m0>=0]
             if p.size==0:
