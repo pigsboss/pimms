@@ -1834,17 +1834,15 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         return np.concatenate(samplings)
 
     def entrance_pupil(self):
+        """Find entrance pupil of the underlying optical system.
+        """
         pass
     
     def exit_pupil(self):
+        """Find exit pupil of the underlying optical system.
+        """
         pass
 
-    def entrance_window(self):
-        pass
-
-    def exit_window(self):
-        pass
-            
 class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
     Geometrically a detector is a innerscribed square of an aperture of a given
