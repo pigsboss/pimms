@@ -1335,11 +1335,19 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
     DAG.
 
     Optical system high-level modelling and analysis tools:
-    1. draw()           - optical path visualization
-    2. entrance_nodes() - get entrance nodes, such as primary mirror, stray light
-                          baffle and so on, by non-sequential raytracing
-    3. exit_nodes()     - get exit nodes, such as focal plane, stray light absorber
-                          and so on, by non-sequential raytracing
+    1. draw()           - Visualize optical paths.
+    2. entrance_nodes() - Get entrance nodes, such as primary mirror, stray light
+                          baffle and so on, by non-sequential raytracing.
+    3. exit_nodes()     - Get exit nodes, such as focal plane, stray light absorber
+                          and so on, by non-sequential raytracing.
+    4. aperture_stop()  - Find aperture stop(s) that limit the amount of light rays
+                          from on-axis sources.
+    5. field_stop()     - Find field stop(s) that limit the incident angle of chief
+                          ray from off-axis sources, i.e., the field of view, and
+                          estimate the polygon profile of the FoV.
+    6. photons_to()     - Find photons going to an objective part.
+    7. photons_from()   - Find photons coming from an objective part.
+    8. effective_area() - Estimate the geometric effective collecting area, in m2.
     
     """
     def __init__(
