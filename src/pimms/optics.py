@@ -1639,12 +1639,13 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
     
     def find_image(
             self,
-            list_of_objects,
+            object_nodes,
             end_of_image,
+            entrance_nodes=None,
+            exit_nodes=None,
             on_axis_source=None,
             batch_rays=10000,
-            init_perturb=1.,
-            perturb_limits=(1e-5, 1.),
+            perturb_dist=(1e-5, 1., 1e-3, 1e-5),
             min_samplings=1000,
             max_batches=10,
             min_precision=1e-9,
@@ -1652,25 +1653,32 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """Find entrance pupil of the underlying optical system.
 
         Arguments:
-        list_of_objects - List of optical objects to image.
+        object_nodes    - List of object nodes to image.
         end_of_image    - Entrance, or Exit.
                           Entrance image such as entrance pupil, i.e., the
-                          image of aperture stop at the entrance of the
+                          image of aperture stop at the entrance-end of the
                           optical system.
                           Exit image such as exit window, i.e., the image
-                          of the field stop at the exit of the optical
+                          of the field stop at the exit-end of the optical
                           system.
+        entrance_nodes  - User picked entrance nodes.
+                          Photons coming from the entrance nodes are considered
+                          as entering the optical system. Thus the space before
+                          entrance nodes are considered as entrance-end.
+        exit_nodes      - User picked exit nodes.
+                          Photons set off from the exit nodes are considered
+                          as exiting from the optical system. Thus the space
+                          after the exit nodes are considered as exit-end.
         on_axis_source  - The on-axis light source that provides reference
                           rays. Default: self.graph['light_source'].
                           Besides the marginal rays from an on-axis source
                           is limited by aperture stop(s).
         batch_rays      - Number of rays per batch.
-        init_perturb    - Initial perturbation scale in term of standard
-                          deviation, in degrees.
+        perturb_dist    - Initial perturbation distribution in (V_min, V_max,
+                          V_mod, V_std), in degrees.
                           Light rays hit optical objects from on-axis source
                           is perturbed before traced backwards to entrance,
                           or forwards to exit of the optical system.
-        perturb_limits  - (min_perturb, max_perturb), in degrees.
         min_samplings   - Minimum number of sampling points required on the
                           image.
         max_batches     - Maximum number of batches.
@@ -1681,41 +1689,30 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
-        entrance_nodes = self.entrance_nodes()
-        exit_nodes = self.exit_nodes()
-        # all direct successors of optical objects
-        all_successors = []
-        for obj in list_of_objects:
-            all_successors += [node for node in self.successors(obj)]
-        # all direct predecessors of exit nodes
-        all_predecessors = []
-        if end_of_image.lower()=='entrance':
-            for obj in list_of_objects:
-                all_predecessors += [node for node in self.predecessors(obj)]
-        else:
-            for obj in exit_nodes:
-                all_predecessors += [node for node in self.predecessors(obj)]
-        # number of collected samplings
-        num_samplings = 0
-        # list of samplings per batch
-        samplings = []
-        # batch counter
-        batch = 0
-        # underlying optical system
-        optics = self.graph['optical_system']
-        # list of indices of optical objects
-        objidx = [optics.parts.index(obj) for obj in list_of_objects]
-        # list of indices of entrance nodes
-        entidx = [optics.parts.index(obj) for obj in entrance_nodes]
-        # list of indices of exit nodes
-        extidx = [optics.parts.index(obj) for obj in exit_nodes]
-        # list of indices of pre-exit nodes
-        preidx = [optics.parts.index(obj) for obj in all_predecessors]
-        # perturbation scale
-        perturb = init_perturb
-        last_perturb = perturb
-        # number of interactions solved
-        num_int = 0
+        if entrance_nodes is None:
+            entrance_nodes = self.entrance_nodes()
+        if exit_nodes is None:
+            exit_nodes = self.exit_nodes()
+        succeding_nodes = []                                          # all direct successors of object nodes
+        for obj in object_nodes:
+            succeding_nodes += [
+                node for node in self.successors(obj)]
+        preceding_nodes = []                                          # all direct predecessors of object nodes
+        for obj in object_nodes:
+            preceding_nodes += [
+                node for node in self.predecessors(obj)]
+        num_samplings = 0                                             # number of collected samplings
+        samplings     = []                                            # list of samplings per batch
+        batch  = 0                                                    # batch counter
+        optics = self.graph['optical_system']                         # underlying optical system
+        objidx = [optics.parts.index(obj) for obj in object_nodes]    # list of indices of optical objects
+        entidx = [optics.parts.index(obj) for obj in entrance_nodes]  # list of indices of entrance nodes
+        extidx = [optics.parts.index(obj) for obj in exit_nodes]      # list of indices of exit nodes
+        preidx = [optics.parts.index(obj) for obj in preceding_nodes] # list of indices of preceding nodes
+        sucidx = [optics.parts.index(obj) for obj in succeding_nodes] # list of indices of succeding nodes
+        p_min, p_max, p_mod, p_std = np.deg2rad(perturb_dist)         # distribution of perturbation
+        p_mod_last = p_mod
+        num_int    = 0                                                # number of interactions solved
         while num_samplings < min_samplings:
             if batch < max_batches:
                 batch += 1
@@ -1723,101 +1720,112 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 raise RuntimeError(
                     "Limit max_batches reached." + \
                     " Try increase max_batches or decrease min_samplings.")
-            # sampled super photons from on-axis source
-            _, q = on_axis_source(
+            phi    = np.random.rand(batch_rays)*2.*np.pi               # random azimuth angles (perturbation direction)
+            theta  = stat.betadist(p_min,p_max,p_mod,p_std,batch_rays) # random zenith angles (perturbation size)
+            _,ps0 = on_axis_source(
                 entrance_nodes,
                 batch_rays, 1.,
-                sampling='random')
-            # forward raytracing
-            pt0, mt0 = optics.trace_network(q, self)
-            # find photons hit the object parts
-            pt1 = np.empty_like(pt0[0])
-            pt2 = np.empty_like(pt0[0])
-            st1 = np.empty_like(mt0[0])
-            for obj in list_of_objects:
-                p0,s0 = self.photons_to(obj, pt0, mt0)   # photons go to the object part
+                sampling='random')                       # 0th photon snapshot, photons entering optical system
+            pt0,mt0 = optics.trace_network(ps0, self)    # forward photon trace and mirror trace
+            ps1 = np.empty_like(ps0)                     # 1st photon snapshot, photons going to object parts
+            ps2 = np.empty_like(ps0)                     # 2nd photon snapshot, photons coming from object parts
+            ps3 = np.empty_like(ps0)                     # 3rd photon snapshot, photons exiting optical system
+            ps4 = np.empty_like(ps0)                     # 4th photon snapshot, photons coming from object parts, perturbed
+            ps5 = np.empty_like(ps0)                     # 5th photon snapshot, photons exiting optical system, perturbed
+            bi0 = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons passing object nodes
+            bi1 = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons passing exit nodes
+            bi2 = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons passing object & exit nodes
+            bii = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons to find required image
+            for obj in object_nodes:                     # traverse listed object parts to fill ps1 and ps2
+                p0,s0 = self.photons_to(  obj, pt0, mt0) # photons go to the object part
                 p1,s1 = self.photons_from(obj, pt0, mt0) # photons come from the object part
-                pt1[s>=0] = p[s>=0]
-                st1[s>=0] = s[s>=0]
-                pt2[s>=0]['position' ] = p1[s>=0]['position' ]
-                pt2[s>=0]['direction'] = p0[s>=0]['direction']
-            
-            p = p0[m0>=0]
-            if p.size==0:
+                ps1[s0>=0] = p0[s0>=0]
+                ps2[s1>=0] = p1[s1>=0]
+                bi0[:] = (bi0 | ((s0>=0)&(s1>=0)))
+            for obj in exit_nodes:                       # traverse exit nodes to fill ps3
+                p0,s0 = self.photons_from(obj, pt0, mt0)
+                ps3[s0>=0] = p0[s0>=0]
+                bi1[:] = (bi1 | (s0>=0))
+            bi2[:] = (bi0 & bi1)
+            if not np.any(bi2):
                 raise RuntimeError("No ray traced on objects.")
             if verbose:
                 print("Batch {:d}: {:d} rays traced on objects.".format(
-                    batch, p.size))
+                    batch, np.sum(bi2)))
             if end_of_image.lower()=='entrance':
-                p['direction'][:] = -p['direction'][:]
-            phi   = 2.*np.pi*np.random.rand(*p.shape)
-            theta = np.deg2rad(np.reshape(stat.betadist(
-                perturb_limits[0], perturb_limits[1], perturb, 3., p.size), p.shape))
-            p['direction'][:] = gimbal(p['direction'][:], phi, theta)
-            if verbose:
-                print("Batch {:d}: {:d} rays perturbed.".format(batch, p.size))
-            if end_of_image.lower()=='entrance':
-                pt1, mt1 = optics.trace_network(
-                    p, self, reverse=True,
-                    starts=all_predecessors,
+                ps4[bi2] = ps2[bi2]
+                ps4[bi2]['direction'] = gimbal(
+                    -ps1[bi2]['direction'],
+                    phi[bi2],
+                    theta[bi2])                          # photons travel backwards from object nodes to entrance
+                pt1,mt1 = optics.trace_network(
+                    ps4[bi2],
+                    self,
+                    reverse=True,
+                    starts=preceding_nodes,
                     stops=entrance_nodes)
-                p1, m1 = filter_trace(pt1, mt1, entidx)
-                m1 = np.bool_(m1>=0)
-                p = p1[m1]
+                p0,m0 = filter_trace(pt1, mt1, entidx)
+                ps5[bi2] = p0
+                bii[bi2] = np.bool_(m0>=0)
                 if verbose:
                     print("Batch {:d}: {:d} backwards rays traced on entrance.".format(
-                        batch, p.size))
-                q = pt0[ 0, m0>=0][m1]
+                        batch, np.sum(bii)))
+                p = ps0[bii]
             else:
-                pt1, mt1 = optics.trace_network(
-                    p, self,
-                    starts=all_successors,
+                ps4[bi2] = ps2[bi2]
+                ps4[bi2]['direction'] = gimbal(
+                    ps2[bi2]['direction'],
+                    phi[bi2],
+                    theta[bi2])                          # photons travel forwards from object nodes to exit
+                pt1,mt1 = optics.trace_network(
+                    ps4[bi2],
+                    self,
+                    starts=succeding_nodes,
                     stops=exit_nodes)
-                _, m1 = filter_trace(pt1, mt1, extidx)
-                p1, m2  = filter_trace(pt1, mt1, preidx)
-                m1 = np.bool_((m1>=0)&(m2>=0))
-                p = p1[m1]
+                p0,m0 = filter_trace(pt1, mt1, extidx)
+                ps5[bi2] = p0
+                bii[bi2] = np.bool_(m0>=0)
                 if verbose:
                     print("Batch {:d}: {:d} forwards rays traced before exit.".format(
-                        batch, p.size))
-                q = pt0[-1, m0>=0][m1]
-            if p.size==0:
-                raise RuntimeError("All rays lost. Try decrease init_perturb.")
-            # find intersections
-            n, s = lins.two_lines_intersection(
+                        batch, np.sum(bii)))
+                p = ps3[bii]
+            q = ps5[bii]
+            if not np.any(bii):
+                raise RuntimeError("All rays lost.")
+            n,s = lins.two_lines_intersection(
                 q['position'], q['direction'],
-                p['position'], p['direction'])
-            m2 = ~np.isnan(s[:])
-            if np.all(~m2):
+                p['position'], p['direction'])           # find intersections
+            m0 = ~np.isnan(s[:])
+            if not np.any(m0):
                 raise RuntimeError("No intersection solved.")
             if verbose:
                 print("Batch {:d}: {:d} intersections solved,".format(
-                    batch, s[m2].size) + \
+                    batch, s[m0].size) + \
                       " S-stats: {:.2E} (peak), {:.2E} (avg), {:.2E} (std).".format(
-                          np.max(np.abs(s[m2])), np.mean(s[m2]), np.std(s[m2])))
+                          np.max(np.abs(s[m0])), np.mean(s[m0]), np.std(s[m0])))
             # adaptive perturbation tuning
-            theta_80 = np.percentile(np.abs(theta[m1][m2]), 80)
-            theta_20 = np.percentile(np.abs(theta[m1][m2]), 20)
-            theta_hi = np.bool_(np.abs(theta[m1][m2])>=theta_80)
-            theta_lo = np.bool_(np.abs(theta[m1][m2])<=theta_20)
-            std_hi   = np.std(s[m2][theta_hi])
-            std_lo   = np.std(s[m2][theta_lo])
+            theta_80 = np.percentile(np.abs(theta[bii][m0]), 80)
+            theta_20 = np.percentile(np.abs(theta[bii][m0]), 20)
+            theta_hi = np.bool_(np.abs(theta[bii][m0])>=theta_80)
+            theta_lo = np.bool_(np.abs(theta[bii][m0])<=theta_20)
+            std_hi   = np.std(s[m0][theta_hi])
+            std_lo   = np.std(s[m0][theta_lo])
             if verbose:
                 print("Batch {:d}: {:.2E} degrees perturb, {:.2E} (hi), {:.2E} (lo).".format(
-                    batch, perturb, std_hi, std_lo))
-            if s[m2].size>=num_int:
-                last_perturb = perturb
-                perturb = perturb*np.clip((std_lo/std_hi), .1, 10.)
-                num_int = s[m2].size
+                    batch, p_mod, std_hi, std_lo))
+            if s[m0].size>=num_int:
+                p_mod_last = p_mod
+                p_mod = p_mod*np.clip((std_lo/std_hi), .1, 10.)
+                num_int = s[m0].size
             else:
-                perturb = (perturb*last_perturb)**.5
-            m3 = np.bool_(np.abs(s[m2])<min_precision)
+                p_mod = (p_mod*p_mod_last)**.5
+            m1 = np.bool_(np.abs(s[m0])<min_precision)
             if verbose:
                 print("Batch {:d}: {:d} samplings collected.".format(
-                    batch, s[m2][m3].size))
-            samplings.append(n[m2,:][m3,:])
-            num_samplings += s[m2][m3].size
-        return np.concatenate(samplings),s[m2],theta[m1][m2]
+                    batch, s[m0][m1].size))
+            samplings.append(n[m0,:][m1,:])
+            num_samplings += s[m0][m1].size
+        return np.concatenate(samplings),s[m0],theta[bii][m0]
 
     def entrance_pupil(self):
         pass
