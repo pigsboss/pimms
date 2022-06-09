@@ -849,7 +849,13 @@ class SymmetricQuadraticMirror(object):
         
 
 class OpticalSystem(object):
-    """Optical system.
+    """Optical system model.
+    An optical system consists of a series of parts as well as their spatial relationships.
+    The parts fall into the following categories:
+    1. Optical mirror, either planar, parabolic, hyperbolic or elliptic;
+    2. Virtual surface, to monitor photons travel through certain cross-sections along the
+       optical paths.
+    3. Detector, to measure the integral amplitude and phase of radiation on given plane.
     """
     def __init__(self, p=[0., 0., 0.], q=[1., 0., 0., 0.], name=''):
         """Create empty optical system.
