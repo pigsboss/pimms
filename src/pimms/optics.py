@@ -1692,7 +1692,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         if entrance_nodes is None:
             entrance_nodes = self.entrance_nodes()
         if exit_nodes is None:
-            exit_nodes = self.exit_nodes()
+            exit_nodes = []
+            for obj in self.exit_nodes():
+                exit_nodes += [
+                    node for node in self.predecessors(obj)]
         succeding_nodes = []                                          # all direct successors of object nodes
         for obj in object_nodes:
             succeding_nodes += [
@@ -1720,12 +1723,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 raise RuntimeError(
                     "Limit max_batches reached." + \
                     " Try increase max_batches or decrease min_samplings.")
-            phi    = np.random.rand(batch_rays)*2.*np.pi               # random azimuth angles (perturbation direction)
-            theta  = stat.betadist(p_min,p_max,p_mod,p_std,batch_rays) # random zenith angles (perturbation size)
             _,ps0 = on_axis_source(
                 entrance_nodes,
                 batch_rays, 1.,
                 sampling='random')                       # 0th photon snapshot, photons entering optical system
+            phi    = np.random.rand(ps0.size)*2.*np.pi               # random azimuth angles (perturbation direction)
+            theta  = stat.betadist(p_min,p_max,p_mod,p_std,ps0.size) # random zenith angles (perturbation size)
             pt0,mt0 = optics.trace_network(ps0, self)    # forward photon trace and mirror trace
             ps1 = np.empty_like(ps0)                     # 1st photon snapshot, photons going to object parts
             ps2 = np.empty_like(ps0)                     # 2nd photon snapshot, photons coming from object parts
@@ -1737,10 +1740,14 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             bi2 = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons passing object & exit nodes
             bii = np.zeros(ps0.shape, dtype='bool')      # boolean indices that select photons to find required image
             for obj in object_nodes:                     # traverse listed object parts to fill ps1 and ps2
-                p0,s0 = self.photons_to(  obj, pt0, mt0) # photons go to the object part
-                p1,s1 = self.photons_from(obj, pt0, mt0) # photons come from the object part
-                ps1[s0>=0] = p0[s0>=0]
-                ps2[s1>=0] = p1[s1>=0]
+                p0,s0 = self.photons_from(obj, pt0, mt0) # photons come from the object part
+                if obj in entrance_nodes:
+                    s1 = np.copy(s0)
+                    p1 = np.copy(pt0[0,(s1>=0)])
+                else:
+                    p1,s1 = self.photons_to(obj, pt0, mt0) # photons go to the object part
+                ps1[s1>=0] = p1[s1>=0]
+                ps2[s0>=0] = p0[s0>=0]
                 bi0[:] = (bi0 | ((s0>=0)&(s1>=0)))
             for obj in exit_nodes:                       # traverse exit nodes to fill ps3
                 p0,s0 = self.photons_from(obj, pt0, mt0)
@@ -1754,14 +1761,13 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     batch, np.sum(bi2)))
             if end_of_image.lower()=='entrance':
                 ps4[bi2] = ps2[bi2]
-                ps4[bi2]['direction'] = gimbal(
-                    -ps1[bi2]['direction'],
+                ps4['direction'][bi2] = gimbal(
+                    -ps1['direction'][bi2],
                     phi[bi2],
                     theta[bi2])                          # photons travel backwards from object nodes to entrance
+                ps4['last_stop'][:] = 0
                 pt1,mt1 = optics.trace_network(
-                    ps4[bi2],
-                    self,
-                    reverse=True,
+                    ps4[bi2], self, reverse=True,
                     starts=preceding_nodes,
                     stops=entrance_nodes)
                 p0,m0 = filter_trace(pt1, mt1, entidx)
@@ -1773,13 +1779,13 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 p = ps0[bii]
             else:
                 ps4[bi2] = ps2[bi2]
-                ps4[bi2]['direction'] = gimbal(
-                    ps2[bi2]['direction'],
+                ps4['direction'][bi2] = gimbal(
+                    ps2['direction'][bi2],
                     phi[bi2],
                     theta[bi2])                          # photons travel forwards from object nodes to exit
+                ps4['last_stop'] = 0
                 pt1,mt1 = optics.trace_network(
-                    ps4[bi2],
-                    self,
+                    ps4[bi2], self,
                     starts=succeding_nodes,
                     stops=exit_nodes)
                 p0,m0 = filter_trace(pt1, mt1, extidx)
@@ -1812,7 +1818,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             std_lo   = np.std(s[m0][theta_lo])
             if verbose:
                 print("Batch {:d}: {:.2E} degrees perturb, {:.2E} (hi), {:.2E} (lo).".format(
-                    batch, p_mod, std_hi, std_lo))
+                    batch, np.rad2deg(p_mod), std_hi, std_lo))
             if s[m0].size>=num_int:
                 p_mod_last = p_mod
                 p_mod = p_mod*np.clip((std_lo/std_hi), .1, 10.)
@@ -1825,7 +1831,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     batch, s[m0][m1].size))
             samplings.append(n[m0,:][m1,:])
             num_samplings += s[m0][m1].size
-        return np.concatenate(samplings),s[m0],theta[bii][m0]
+        return np.concatenate(samplings)
 
     def entrance_pupil(self):
         pass
