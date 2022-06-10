@@ -1637,10 +1637,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             delta_z = spokes_zmax - spokes_zmin
         return fstops, spokes_az, spokes_zmin, spokes_zmax
     
-    def find_image(
+    def find_pupil(
             self,
-            object_nodes,
-            end_of_image,
+            end_of_pupil,
             entrance_nodes=None,
             exit_nodes=None,
             on_axis_source=None,
@@ -1650,17 +1649,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             max_batches=10,
             min_precision=1e-9,
             verbose=False):
-        """Find entrance pupil of the underlying optical system.
+        """Find entrance/exit pupil of the underlying optical system.
 
         Arguments:
-        object_nodes    - List of object nodes to image.
-        end_of_image    - Entrance, or Exit.
-                          Entrance image such as entrance pupil, i.e., the
-                          image of aperture stop at the entrance-end of the
-                          optical system.
-                          Exit image such as exit window, i.e., the image
-                          of the field stop at the exit-end of the optical
-                          system.
+        end_of_pupil    - Entrance, or Exit.
         entrance_nodes  - User picked entrance nodes.
                           Photons coming from the entrance nodes are considered
                           as entering the optical system. Thus the space before
@@ -1680,13 +1672,14 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                           is perturbed before traced backwards to entrance,
                           or forwards to exit of the optical system.
         min_samplings   - Minimum number of sampling points required on the
-                          image.
+                          pupil.
         max_batches     - Maximum number of batches.
                           Process will be terminated when it reaches this
                           limit and RuntimeError is raised.
         min_precision   - Minimum precision required.
         verbose         - Print verbose messages for diagnosis.
         """
+        object_nodes = self.aperture_stop()
         if on_axis_source is None:
             on_axis_source = self.graph['light_source']
         if entrance_nodes is None:
@@ -1759,7 +1752,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             if verbose:
                 print("Batch {:d}: {:d} rays traced on objects.".format(
                     batch, np.sum(bi2)))
-            if end_of_image.lower()=='entrance':
+            if end_of_pupil.lower()=='entrance':
                 ps4[bi2] = ps2[bi2]
                 ps4['direction'][bi2] = gimbal(
                     -ps1['direction'][bi2],
@@ -1833,15 +1826,6 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             num_samplings += s[m0][m1].size
         return np.concatenate(samplings)
 
-    def entrance_pupil(self):
-        """Find entrance pupil of the underlying optical system.
-        """
-        pass
-    
-    def exit_pupil(self):
-        """Find exit pupil of the underlying optical system.
-        """
-        pass
 
 class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
