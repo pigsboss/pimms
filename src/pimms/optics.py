@@ -1828,7 +1828,15 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
 
     def image(self, object_source, time_of_exposure, batch_rays=10000, min_samplings=10000, verbose=False):
         """Calculate end-to-end image with Huygens-Fresnel integration.
+
+        Arguments:
+        object_source
+        time_of_exposure
+        batch_rays
+        min_samplings
+        verbose
         """
+        # estimate fov of optics
         
         pass
 
