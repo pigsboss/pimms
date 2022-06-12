@@ -25,7 +25,7 @@ sptype = np.dtype([
     ('position',   'f8', 3),
     ('direction',  'f8', 3),
     ('wavelength', 'f8'),
-    ('phase',      'f8'),
+    ('distance',   'f8'),
     ('last_stop',  'i8')
 ])
 
@@ -199,21 +199,21 @@ class LightSource(object):
         phase     - phase angle at starting point
 
         Returns:
-        sp_start  - super photons passing through an equi-phase surface between the exit pupil
+        sp_start  - super photons passing through an wavefront between the exit pupil
                     of the light source and the apertures.
         sp_stop   - super photons arriving at the apertures
         """
         #
-        # find super photons at equi-phase surface sq_start.
+        # find super photons at wavefront sq_start.
         if np.isinf(self.rho):
             # plane wave
-            op = [] # length of optical path from the equi-phase plane to the nearest point on the aperture
+            op = [] # length of optical path from the wavefront to the nearest point on the aperture
             area   = 0. # total area of exit pupil
             for aperture in list_of_apertures:
                 norm_aperture = quat.rotate(aperture.q, [0., 0., 1.]) # normal vector of aperture
                 cos_alpha = np.sum(self.direction.ravel()*norm_aperture.ravel())
                 sin_alpha = (1.-cos_alpha**2.)**.5
-                # displacement from the center of the aperture to the equi-phase plane passing the origin, i.e.,
+                # displacement from the center of the aperture to the wavefront passing the origin, i.e.,
                 # (x,y,z) dot self.direction = 0, along the direction towards the source.
                 t = -aperture.p[0]*self.direction[0]-aperture.p[1]*self.direction[1]-aperture.p[2]*self.direction[2]
                 op.append(t-aperture.d_out*sin_alpha*.5)
@@ -354,7 +354,7 @@ class LightSource(object):
                 sp_start['weight']    = self.intensity*dt*(4.*np.pi*self.rho**2.)/self.energy/num_super_photons
                 sp_start['direction'] = np.array(quat.ptr2xyz(phi, np.pi/2.-theta, 1.)).transpose()
             sp_start['position'] = p
-        sp_start['phase'] = 0.
+        sp_start['distance'] = 0.
         #
         # find super photons at aperture sp_stop.
         sp_stop = np.empty_like(sp_start)
@@ -368,8 +368,8 @@ class LightSource(object):
             sp_stop['position'][:] = np.where((t<sp_dist).reshape(-1,1), np.transpose(quat.rotate(aperture.q,n)+aperture.p), sp_stop['position'])
             sp_dist = np.where(t<sp_dist, t, sp_dist)
         miss_all = np.isinf(sp_dist)
-        sp_stop['phase'][ miss_all] = np.nan
-        sp_stop['phase'][~miss_all] = 2.*np.pi*np.mod(sp_dist[~miss_all], self.wavelength)/self.wavelength
+        sp_stop['distance'][ miss_all] = np.nan
+        sp_stop['distance'][~miss_all] = sp_dist[~miss_all]
         sp_start['wavelength'][:] = self.wavelength
         sp_stop['wavelength'][:] = self.wavelength
         sp_start['last_stop'][:] = 0
@@ -808,7 +808,7 @@ class SymmetricQuadraticMirror(object):
         photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection) + self.p)
         s = quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p) # starting points of incoming photon in fixed csys
         p = intersection - s # displacement from source to intersection, in fixed csys
-        photon_out['phase'     ][:] = np.mod(photon_in['phase']+2.*np.pi*np.sum(p.transpose()**2.,axis=1)**.5/photon_in['wavelength'], 2.*np.pi)
+        photon_out['distance'  ][:] = photon_in['distance'] + np.sum(p.transpose()**2.,axis=1)**.5
         if self.is_virtual:
             # pass-through virtual mirror (optical parts)
             photon_out['direction'][:] = photon_in['direction']
@@ -845,7 +845,7 @@ class SymmetricQuadraticMirror(object):
         photon_pro = np.copy(photon_src)
         photon_pro['position' ][:] = np.transpose(s+u*t)
         photon_pro['direction'][:] = np.transpose(u)
-        photon_pro['phase'    ][:] = np.mod(photon_src['phase']+2.*np.pi*t/photon_src['wavelength'], 2.*np.pi)
+        photon_pro['distance' ][:] = photon_src['distance'] + t
         return photon_pro
         
 
@@ -1847,7 +1847,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """
         optics = self.graph['optical_system']
         entrance_nodes = optics.get_entrance()
-        detectors = optics.get_detector()
+        detectors = optics.get_detectors()
         fov = optics.fov()
         #
         # Validation
@@ -1856,14 +1856,16 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         assert len(detectors)>0, "No detector found."
         #
         # Locate object source
-        phi_obj, theta_obj, _ = quat.xyz2ptr(quat.rotate(quat.conj(optics.q), object_source.direction))
+        phi_obj, theta_obj, _ = quat.xyz2ptr(
+            *np.squeeze(quat.rotate(quat.conjugate(optics.q), object_source.direction)))
+        theta_obj = np.pi/2.-theta_obj
         if np.abs(theta_obj)>(fov/2.):
             warnings.warn("Object is out of FoV.", RuntimeWarning)
         #
         # Find indices of exit nodes where photons set off for the detector(s)
         extidx = [] # indices of exit nodes
         for det in detectors:
-            extidx += [obj for obj in self.predecessors(det)]
+            extidx += [optics.parts.index(obj) for obj in self.predecessors(det)]
         assert len(extidx)>0, "No exit nodes found."
         #
         # Collecting exit pupil samplings
@@ -1886,15 +1888,25 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 entrance_nodes, batch_rays, time_of_exposure,
                 sampling='random')                                            # object rays emanated at entrance
             p_ref = np.copy(p_obj)                                            # reference rays emanated at entrance
-            p_ref['direction'] = u_ref
+            p_ref['direction'] = u_ref.reshape((-1,3))
             pt_obj, mt_obj = optics.trace_network(p_obj, self)
             pt_ref, mt_ref = optics.trace_network(p_ref, self)
             q_obj, m_obj = filter_trace(pt_obj, mt_obj, extidx)               # object rays traced at exit
+            if verbose:
+                print("Batch {:d}: {:d} object rays traced at exit.".format(batch,np.sum(m_obj>=0)))
             q_ref, m_ref = filter_trace(pt_ref, mt_ref, extidx)               # reference rays traced at exit
+            if verbose:
+                print("Batch {:d}: {:d} reference rays traced at exit.".format(batch,np.sum(m_ref>=0)))
             m_ext = np.bool_((m_obj>=0)&(m_ref>=0))                           # boolean mask, ray traced at exit or not
             if verbose:
-                print("Batch {:d}: {:d} rays emanated, {:d} rays traced at exit.".format(batch,p_obj.size,np.sum(m_ext)))
+                print("Batch {:d}: {:d} ray-pairs traced at exit.".format(batch,np.sum(m_ext)))
             if not np.any(m_ext):
+                print((x_ref,y_ref))
+                print(u_ref)
+                print(p_obj['position'])
+                print(p_ref['position'])
+                print(p_obj['direction'])
+                print(p_ref['direction'])
                 raise RuntimeError("All rays lost at exit.")
             o,s = lins.two_lines_intersection(
                 q_obj['position'][m_ext], q_obj['direction'][m_ext],
@@ -1913,10 +1925,8 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             t = np.sum((o[m_pcs]-q_obj['position'][m_ext][m_pcs])*\
                        q_obj['direction'][m_ext][m_pcs], axis=-1)             # optical path distance from exit node to exit pupil
             w_pcs['position'] = q_obj['position'][m_ext][m_pcs]+\
-                q_obj['direction'][m_ext][m_pcs]*t
-            w_pcs['phase'] = np.mod(
-                q_obj['phase'][m_ext][m_pcs]+\
-                2.*np.pi*t/q_obj['wavelength'][m_ext][m_pcs], 2.*np.pi)
+                q_obj['direction'][m_ext][m_pcs]*np.reshape(t,(-1,1))
+            w_pcs['distance'] = q_obj['distance'][m_ext][m_pcs] + t
             wavelets.append(w_pcs)
             num_samplings+=w_pcs.size
             batch+=1
@@ -1964,14 +1974,16 @@ class Detector(SymmetricQuadraticMirror):
         yi = ((np.arange(N)+.5)/N - .5)*a
         self.x, self.y = np.meshgrid(xi, yi)
         self.photon_buffer = np.empty((0,), dtype=sptype)
+        self.integrate = False
 
     def encounter(self, photon_in, intersection):
         """Overriding SymmetricQuadraticMirror.encounter()
         """
         photon_out = super(Detector, self).encounter(photon_in, intersection)
-        photon_det = np.copy(photon_out)
-        photon_det['position'][:] = intersection.transpose()
-        self.photon_buffer = np.concatenate((self.photon_buffer, photon_det))
+        if self.integrate:
+            photon_det = np.copy(photon_out)
+            photon_det['position'][:] = intersection.transpose()
+            self.photon_buffer = np.concatenate((self.photon_buffer, photon_det))
         return photon_out
     
     def readout(self, clear_buffer=True):
@@ -1981,8 +1993,8 @@ class Detector(SymmetricQuadraticMirror):
         xid = np.int64((self.photon_buffer['position'][:,0]+self.a/2.)/self.a*self.npxs)
         yid = np.int64((self.photon_buffer['position'][:,1]+self.a/2.)/self.a*self.npxs)
         pid = yid*self.npxs+xid
-        re  = (self.photon_buffer['weight']**.5)*np.cos(self.photon_buffer['phase'])
-        im  = (self.photon_buffer['weight']**.5)*np.sin(self.photon_buffer['phase'])
+        re  = (self.photon_buffer['weight']**.5)*np.cos(np.mod(self.photon_buffer['distance'],self.photon_buffer['wavelength'])*np.pi*2.)
+        im  = (self.photon_buffer['weight']**.5)*np.sin(np.mod(self.photon_buffer['distance'],self.photon_buffer['wavelength'])*np.pi*2.)
         remap = np.bincount(pid.ravel(), weights=re, minlength=self.npxs*self.npxs)
         immap = np.bincount(pid.ravel(), weights=im, minlength=self.npxs*self.npxs)
         amp = np.reshape((remap**2.+immap**2.)**.5, (self.npxs, self.npxs))
