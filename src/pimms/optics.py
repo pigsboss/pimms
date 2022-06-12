@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import healpy as hp
 import copy
+import warnings
 import pymath.quaternion as quat
 import pymath.linsolvers as lins
 import pymath.statistics as stat
@@ -1826,7 +1827,13 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             num_samplings += s[m0][m1].size
         return np.concatenate(samplings)
 
-    def image(self, object_source, time_of_exposure, batch_rays=10000, min_samplings=10000, verbose=False):
+    def image(
+            self, object_source, time_of_exposure,
+            batch_rays=10000,
+            min_samplings=10000,
+            max_batches=100,
+            min_precision=1e-9,
+            verbose=False):
         """Calculate end-to-end image with Huygens-Fresnel integration.
 
         Arguments:
@@ -1834,11 +1841,86 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         time_of_exposure
         batch_rays
         min_samplings
+        max_batches
+        min_precision
         verbose
         """
-        # estimate fov of optics
-        
-        pass
+        optics = self.graph['optical_system']
+        entrance_nodes = optics.get_entrance()
+        detectors = optics.get_detector()
+        fov = optics.fov()
+        #
+        # Validation
+        assert isinstance(optics, ImagingSystem), "The underlying object must be an imaging system."
+        assert len(entrance_nodes)>0, "No entrance found."
+        assert len(detectors)>0, "No detector found."
+        #
+        # Locate object source
+        phi_obj, theta_obj, _ = quat.xyz2ptr(quat.rotate(quat.conj(optics.q), object_source.direction))
+        if np.abs(theta_obj)>(fov/2.):
+            warnings.warn("Object is out of FoV.", RuntimeWarning)
+        #
+        # Find indices of exit nodes where photons set off for the detector(s)
+        extidx = [] # indices of exit nodes
+        for det in detectors:
+            extidx += [obj for obj in self.predecessors(det)]
+        assert len(extidx)>0, "No exit nodes found."
+        #
+        # Collecting exit pupil samplings
+        num_samplings = 0
+        wavelets = []
+        batch = 0
+        dphi = np.arccos(theta_obj/fov)
+        while num_samplings < min_samplings:
+            if batch >= max_batches:
+                raise RuntimeError("max_batches limit reached.")
+            if np.isclose(theta_obj, 0.):
+                phi_0 = np.squeeze(np.random.rand(1))*2.*np.pi
+            else:
+                phi_0 = np.squeeze(np.random.rand(1)-.5)*2.*dphi + \
+                    phi_obj + np.pi                                           # random azimuth angle for reference source
+            x_ref = .5*fov*np.cos(phi_0) + theta_obj*np.cos(phi_obj)          # x-coordinate of reference source in FoV
+            y_ref = .5*fov*np.sin(phi_0) + theta_obj*np.sin(phi_obj)          # y-coordinate of reference source in FoV
+            u_ref = np.array([-x_ref, -y_ref, -(1.-x_ref**2.-y_ref**2.)**.5]) # direction (unit vector) of reference rays
+            _, p_obj = object_source(
+                entrance_nodes, batch_rays, time_of_exposure,
+                sampling='random')                                            # object rays emanated at entrance
+            p_ref = np.copy(p_obj)                                            # reference rays emanated at entrance
+            p_ref['direction'] = u_ref
+            pt_obj, mt_obj = optics.trace_network(p_obj, self)
+            pt_ref, mt_ref = optics.trace_network(p_ref, self)
+            q_obj, m_obj = filter_trace(pt_obj, mt_obj, extidx)               # object rays traced at exit
+            q_ref, m_ref = filter_trace(pt_ref, mt_ref, extidx)               # reference rays traced at exit
+            m_ext = np.bool_((m_obj>=0)&(m_ref>=0))                           # boolean mask, ray traced at exit or not
+            if verbose:
+                print("Batch {:d}: {:d} rays emanated, {:d} rays traced at exit.".format(batch,p_obj.size,np.sum(m_ext)))
+            if not np.any(m_ext):
+                raise RuntimeError("All rays lost at exit.")
+            o,s = lins.two_lines_intersection(
+                q_obj['position'][m_ext], q_obj['direction'][m_ext],
+                q_ref['position'][m_ext], q_ref['direction'][m_ext])
+            m_pup = (~np.isnan(s))                                            # boolean mask, intersection found or not
+            if not np.any(m_pup):
+                raise RuntimeError("No intersection found at pupil.")
+            if verbose:
+                print("Batch {:d}: {:d} points sampled at pupil, S-stat: {:.2E} (min), {:.2E} (avg), {:.2E} (max).".format(
+                    batch,np.sum(m_pup),np.min(np.abs(s[m_pup])),np.mean(np.abs(s[m_pup])),np.max(np.abs(s[m_pup]))))
+            m_pcs = np.zeros_like(m_pup)                                      # boolean mask, intersection meets precision requirement or not
+            m_pcs[m_pup] = (np.abs(s[m_pup])<=min_precision)
+            if not np.any(m_pcs):
+                raise RuntimeError("No intersection meets min precision requirement.")
+            w_pcs = np.copy(q_obj[m_ext][m_pcs])                              # object rays (wavelets) traced at exit pupil
+            t = np.sum((o[m_pcs]-q_obj['position'][m_ext][m_pcs])*\
+                       q_obj['direction'][m_ext][m_pcs], axis=-1)             # optical path distance from exit node to exit pupil
+            w_pcs['position'] = q_obj['position'][m_ext][m_pcs]+\
+                q_obj['direction'][m_ext][m_pcs]*t
+            w_pcs['phase'] = np.mod(
+                q_obj['phase'][m_ext][m_pcs]+\
+                2.*np.pi*t/q_obj['wavelength'][m_ext][m_pcs], 2.*np.pi)
+            wavelets.append(w_pcs)
+            num_samplings+=w_pcs.size
+            batch+=1
+        return np.concatenate(wavelets)
 
 class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
@@ -1908,8 +1990,49 @@ class Detector(SymmetricQuadraticMirror):
         if clear_buffer:
             self.photon_buffer = np.empty((0,), dtype=sptype)
         return amp, pha
-    
-class CassegrainReflector(OpticalSystem):
+
+class ImagingSystem(OpticalSystem):
+    def __init__(self):
+        super(ImagingSystem, self).__init__()
+        self.area_saved = None
+        self.area_error = np.inf
+        self.fov_saved = None
+        self.fov_error = np.inf
+        
+    def area(self, precision=1e-3, max_iterations=100, batch_rays=10000):
+        """Get geometrical effective area, in square meters.
+
+        precision - required precision, in square meters.
+        """
+        if (self.area_saved is None) or (self.area_error > precision):
+            print("Re-calibrate the effective area...")
+            opn = OpticalPathNetwork(self)
+            self.area_saved = 0.
+            area2 = 0.
+            n = 0
+            while ((n < 3) or self.area_error > precision) and (n<max_iterations):
+                a = opn.effective_area(rays=batch_rays)
+                self.area_saved = (self.area_saved*n+a)/(n+1)
+                area2 = (area2*n+a**2.)/(n+1)
+                self.area_error = ((area2-self.area_saved**2.)/(n+1))**.5
+                n += 1
+        return self.area_saved
+
+    def fov(self, precision=1e-6, num_spokes=8):
+        """Get field of view by diameter of a circle that fits
+        the FoV, in radian.
+
+        precision - required precision, in radian.
+        """
+        if (self.fov_saved is None) or (self.fov_error > precision):
+            print("Re-calibrate the field of view...")
+            opn = OpticalPathNetwork(self)
+            fstops, az, zmin, zmax = opn.field_stop(num_spokes=num_spokes, min_precision=precision)
+            self.fov_saved = np.min(zmin+zmax)
+            self.fov_error = np.max(np.abs(zmax-zmin))
+        return self.fov_saved
+
+class CassegrainReflector(ImagingSystem):
     def __init__(
             self,
             d=2.,
@@ -1971,7 +2094,7 @@ class PhotonCollector(OpticalSystem):
         self.add_part(m1)
         self.add_part(m2)
 
-class SIM(OpticalSystem):
+class SIM(ImagingSystem):
     """Simplified Michelson stellar interferometer model.
     
     1. Overall model
@@ -2100,7 +2223,7 @@ class SIM(OpticalSystem):
         # right arm
         arm1 = OpticalSystem()
         # beam combiner
-        bc  = OpticalSystem()
+        bc = OpticalSystem()
         pr0.add_part(pc0.parts[-1])
         pr0.add_part(m30)
         pr1.add_part(pc1.parts[-1])
@@ -2137,8 +2260,7 @@ class SIM(OpticalSystem):
         # delay line controllers
         for dl in self.delaylines:
             dl.p = .5*(dl.parts[0].p + dl.parts[1].p)
-        
-        
+
 class BeamCompressor(object):
     """Simplified optical model for beam compressor system.
 
