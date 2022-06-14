@@ -1792,9 +1792,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             q = ps5[bii]
             if not np.any(bii):
                 raise RuntimeError("All rays lost.")
-            n,s = lins.two_lines_intersection(
-                q['position'], q['direction'],
-                p['position'], p['direction'])           # find intersections
+            n,s = lins.lines_intersection(
+                [q['position' ], p['position' ]],
+                [q['direction'], p['direction']])           # find intersections
             m0 = ~np.isnan(s[:])
             if not np.any(m0):
                 raise RuntimeError("No intersection solved.")
@@ -1908,9 +1908,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 print(p_obj['direction'])
                 print(p_ref['direction'])
                 raise RuntimeError("All rays lost at exit.")
-            o,s = lins.two_lines_intersection(
-                q_obj['position'][m_ext], q_obj['direction'][m_ext],
-                q_ref['position'][m_ext], q_ref['direction'][m_ext])
+            o,s = lins.lines_intersection(
+                [q_obj['position' ][m_ext], q_ref['position' ][m_ext]],
+                [q_obj['direction'][m_ext], q_ref['direction'][m_ext]])
             m_pup = (~np.isnan(s))                                            # boolean mask, intersection found or not
             if not np.any(m_pup):
                 raise RuntimeError("No intersection found at pupil.")
