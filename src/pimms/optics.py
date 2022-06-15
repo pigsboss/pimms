@@ -150,6 +150,8 @@ def find_chiefray(xi, yi, ui, vi):
     rms = (np.squeeze(res)/n)**.5
     return u0,v0,T,rms
 
+def triangular_beam():
+    pass
 
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
@@ -1878,7 +1880,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         #
         # Collecting exit pupil samplings
         num_samplings = 0
-        wavelets = []
+        w_ent = []
+        w_ext = []
+        i_ent = []
         batch = 0
         dphi = np.arccos(theta_obj/fov)
         while num_samplings < min_samplings:
@@ -1935,10 +1939,19 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             w_pcs['position'] = q_obj['position'][m_ext][m_pcs]+\
                 q_obj['direction'][m_ext][m_pcs]*np.reshape(t,(-1,1))
             w_pcs['distance'] = q_obj['distance'][m_ext][m_pcs] + t
-            wavelets.append(w_pcs)
+            w_ext.append(w_pcs)
+            w_ent.append(np.copy(p_obj[m_ext][m_pcs]))
+            i_ent.append(np.copy(mt_obj[1][m_ext][m_pcs]))
             num_samplings+=w_pcs.size
             batch+=1
-        return np.concatenate(wavelets)
+        w_ent = np.concatenate(w_ent)
+        w_ext = np.concatenate(w_ext)
+        i_ent = np.concatenate(i_ent)
+        #
+        # Triangular beam analysis
+        tris = Delaunay(w_ent['position'][:,:2])
+        
+        return w_ent, w_ext, i_ent
 
 class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
