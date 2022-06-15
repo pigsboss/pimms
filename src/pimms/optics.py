@@ -803,7 +803,6 @@ class SymmetricQuadraticMirror(object):
         """
         photon_out  = np.copy(photon_in)
         photon_out['last_stop' ][:] = id(self)
-        photon_out['weight'    ][:] = photon_in['weight']
         photon_out['wavelength'][:] = photon_in['wavelength']
         photon_out['position'  ][:] = np.transpose(quat.rotate(self.q, intersection) + self.p)
         s = quat.rotate(quat.conjugate(self.q), photon_in['position'].transpose()-self.p) # starting points of incoming photon in fixed csys
@@ -812,6 +811,7 @@ class SymmetricQuadraticMirror(object):
         if self.is_virtual:
             # pass-through virtual mirror (optical parts)
             photon_out['direction'][:] = photon_in['direction']
+            photon_out['weight'   ][:] = photon_in['weight']
         else:
             # determine direction after encounter
             m = self.normal(intersection)
@@ -821,11 +821,17 @@ class SymmetricQuadraticMirror(object):
             lat_a = np.where(lat_n>0., -lat_n+np.pi/2., lat_n+np.pi/2.)
             q  = quat.from_angles(lon_a, lat_a) # quaternion convert coordinates from local tangent csys to lab csys
             u  = quat.rotate(quat.conjugate(q), photon_in['direction'].transpose()) # direction vector of incoming photon in local tangent csys
-            d  = np.reshape(m[0]*p[0]+m[1]*p[1]+m[2]*p[2], (-1, 1))
-            tm = np.array([np.abs(self.boundary[0]), np.abs(self.boundary[0]), -self.boundary[0]])
-            bm = np.array([np.abs(self.boundary[1]), np.abs(self.boundary[1]), -self.boundary[1]])
-            v  = u.transpose()*np.where(d<0., tm, bm) # outgoing direction vector in local tangent csys
-            photon_out['direction' ][:] = quat.rotate(q, v.transpose()).transpose() # outgoing direction in lab csys
+            d  = m[0]*p[0]+m[1]*p[1]+m[2]*p[2]
+            photon_out['direction'][:] = quat.rotate(
+                q, np.transpose(
+                    u.transpose()*np.where(
+                        d.reshape((-1, 1))<0.,
+                        np.array([1., 1., np.sign(-self.boundary[0])]),
+                        np.array([1., 1., np.sign(-self.boundary[1])])))).transpose() # outgoing direction in lab csys
+            photon_out['weight'   ][:] = photon_in['weight']*np.where(
+                d<0.,
+                np.abs(self.boundary[0]),
+                np.abs(self.boundary[1]))
         return photon_out
 
     def aperture_projection(self, photon_src, z=0):
