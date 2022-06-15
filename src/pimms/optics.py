@@ -11,6 +11,7 @@ import warnings
 import pymath.quaternion as quat
 import pymath.linsolvers as lins
 import pymath.statistics as stat
+from scipy.spatial import Delaunay
 from time import time
 from mayavi import mlab
 from matplotlib import rcParams
@@ -148,6 +149,7 @@ def find_chiefray(xi, yi, ui, vi):
     T   = np.array([[x[0], x[1]],[x[2], x[3]]])
     rms = (np.squeeze(res)/n)**.5
     return u0,v0,T,rms
+
 
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
