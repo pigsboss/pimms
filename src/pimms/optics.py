@@ -1948,9 +1948,30 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         w_ext = np.concatenate(w_ext)
         i_ent = np.concatenate(i_ent)
         #
-        # Triangular beam analysis
-        tris = Delaunay(w_ent['position'][:,:2])
-        
+        # Triangular beam analysis per entrance
+        for k in np.unique(i_ent):
+            m_ent = np.bool_(i_ent==k)
+            tris = Delaunay(w_ent['position'][m_ent][:,:2]) # construct initial triangulation
+            if verbose:
+                print("Entrance {:d}: {:d} triangles constructed.".format(k, tris.simplices.shape[0]))
+            rho0 = np.sum((np.sum(w_ent['position'][mk][tris.simplices],axis=1)[:,:2]/3. - \
+                           optics.parts[k].p.reshape((-1,3))[:,:2])**2.,axis=-1)**.5   # distance between entrance center and initial triangulation centroids
+            m_rho = np.bool_((rho0<=optics.parts[k].d_out/2.) & \
+                             (rho0>=optics.parts[k].d_in/2.))
+            if verbose:
+                print("Entrance {:d}: {:d} triangles selected.".format(k, np.sum(m_rho)))
+            # Geometric analysis, to derive area of surface elements on entrance wavefront, exit wavefront and exit aperture
+            r1_ent,r2_ent,r3_ent = np.moveaxis(w_ent['position' ][m_ent][tris.simplices[m_rho]],1,0) # entrance triangulation vertex positions
+            u1_ent,u2_ent,u3_ent = np.moveaxis(w_ent['direction'][m_ent][tris.simplices[m_rho]],1,0) # entrance triangulation vertex directions
+            r0_ent = np.sum(w_ent['position' ][m_ent][tris.simplices[m_rho]],axis=1)/3.              # entrance triangulation centroid positions
+            u0_ent = np.sum(w_ent['direction'][m_ent][tris.simplices[m_rho]],axis=1)/3.              # entrance triangulation centroid directions
+            r1_ext,r2_ext,r3_ext = np.moveaxis(w_ext['position' ][m_ent][tris.simplices[m_rho]],1,0) # exit triangulation vertex positions
+            u1_ext,u2_ext,u3_ext = np.moveaxis(w_ext['direction'][m_ent][tris.simplices[m_rho]],1,0) # exit triangulation vertex directions
+            r0_ext = np.sum(w_ext['position' ][m_ent][tris.simplices[m_rho]],axis=1)/3.              # exit triangulation centroid positions
+            u0_ext = np.sum(w_ext['direction'][m_ent][tris.simplices[m_rho]],axis=1)/3.              # exit triangulation centroid directions
+            # Photometric analysis, to derive energy enclosed in each triangular beam
+            
+            
         return w_ent, w_ext, i_ent
 
 class Detector(SymmetricQuadraticMirror):
