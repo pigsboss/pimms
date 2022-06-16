@@ -150,8 +150,31 @@ def find_chiefray(xi, yi, ui, vi):
     rms = (np.squeeze(res)/n)**.5
     return u0,v0,T,rms
 
-def triangular_beam():
-    pass
+def triangle_area(r1,r2,r3):
+    """Find area of triangle provided vertices.
+    """
+    a  = np.linalg.norm(r2-r1,axis=-1)
+    b  = np.linalg.norm(r3-r2,axis=-1)
+    c  = np.linalg.norm(r1-r3,axis=-1)
+    s  = (a+b+c)/2.
+    return (s*(s-a)*(s-b)*(s-c))**.5
+
+def triangular_beam(r1,u1,r2,u2,r3,u3):
+    """Find geometric parameters of a triangular beam.
+    r = ri + ui*t, i=1,2,3 are the three rays that defines the triangular beam.
+
+    Returns:
+    r0,u0 position and direction of the central ray.
+    ba,na bottom and normal surface area of the beam.
+    """
+    ba = triangle_area(r1,r2,r3)
+    r0 = (r1+r2+r3)/3.
+    u0 = (u1+u2+u3)/3.
+    p1 = r1+u1*np.reshape(np.sum((r0-r1)*u0,axis=-1)/np.sum(u0*u1,axis=-1),(-1,1))
+    p2 = r2+u2*np.reshape(np.sum((r0-r2)*u0,axis=-1)/np.sum(u0*u2,axis=-1),(-1,1))
+    p3 = r3+u3*np.reshape(np.sum((r0-r3)*u0,axis=-1)/np.sum(u0*u3,axis=-1),(-1,1))
+    na = triangle_area(p1,p2,p3)
+    return r0,u0,ba,na
 
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
@@ -1885,6 +1908,8 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         i_ent = []
         batch = 0
         dphi = np.arccos(theta_obj/fov)
+        if verbose:
+            print("Collecting pupil samplings...")
         while num_samplings < min_samplings:
             if batch >= max_batches:
                 raise RuntimeError("max_batches limit reached.")
@@ -1905,13 +1930,13 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             pt_ref, mt_ref = optics.trace_network(p_ref, self)
             q_obj, m_obj = filter_trace(pt_obj, mt_obj, extidx)               # object rays traced at exit
             if verbose:
-                print("Batch {:d}: {:d} object rays traced at exit.".format(batch,np.sum(m_obj>=0)))
+                print("  Batch {:d}: {:d} object rays traced at exit.".format(batch,np.sum(m_obj>=0)))
             q_ref, m_ref = filter_trace(pt_ref, mt_ref, extidx)               # reference rays traced at exit
             if verbose:
-                print("Batch {:d}: {:d} reference rays traced at exit.".format(batch,np.sum(m_ref>=0)))
+                print("  Batch {:d}: {:d} reference rays traced at exit.".format(batch,np.sum(m_ref>=0)))
             m_ext = np.bool_((m_obj>=0)&(m_ref>=0))                           # boolean mask, ray traced at exit or not
             if verbose:
-                print("Batch {:d}: {:d} ray-pairs traced at exit.".format(batch,np.sum(m_ext)))
+                print("  Batch {:d}: {:d} ray-pairs traced at exit.".format(batch,np.sum(m_ext)))
             if not np.any(m_ext):
                 print((x_ref,y_ref))
                 print(u_ref)
@@ -1927,7 +1952,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             if not np.any(m_pup):
                 raise RuntimeError("No intersection found at pupil.")
             if verbose:
-                print("Batch {:d}: {:d} points sampled at pupil, S-stat: {:.2E} (min), {:.2E} (avg), {:.2E} (max).".format(
+                print("  Batch {:d}: {:d} points sampled at pupil, S-stat: {:.2E} (min), {:.2E} (avg), {:.2E} (max).".format(
                     batch,np.sum(m_pup),np.min(np.abs(s[m_pup])),np.mean(np.abs(s[m_pup])),np.max(np.abs(s[m_pup]))))
             m_pcs = np.zeros_like(m_pup)                                      # boolean mask, intersection meets precision requirement or not
             m_pcs[m_pup] = (np.abs(s[m_pup])<=min_precision)
@@ -1949,28 +1974,39 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         i_ent = np.concatenate(i_ent)
         #
         # Triangular beam analysis per entrance
+        if verbose:
+            print("Triangular beam analyzing...")
         for k in np.unique(i_ent):
             m_ent = np.bool_(i_ent==k)
             tris = Delaunay(w_ent['position'][m_ent][:,:2]) # construct initial triangulation
             if verbose:
-                print("Entrance {:d}: {:d} triangles constructed.".format(k, tris.simplices.shape[0]))
-            rho0 = np.sum((np.sum(w_ent['position'][mk][tris.simplices],axis=1)[:,:2]/3. - \
+                print("  Entrance {:d}: {:d} triangles constructed.".format(k, tris.simplices.shape[0]))
+                if len(tris.coplanar)>0:
+                    print("  Entrance {:d}: {:d} coplanar rays not included.".format(k, len(tris.coplanar)))
+            rho0 = np.sum((np.sum(w_ent['position'][m_ent][tris.simplices],axis=1)[:,:2]/3. - \
                            optics.parts[k].p.reshape((-1,3))[:,:2])**2.,axis=-1)**.5   # distance between entrance center and initial triangulation centroids
             m_rho = np.bool_((rho0<=optics.parts[k].d_out/2.) & \
                              (rho0>=optics.parts[k].d_in/2.))
             if verbose:
-                print("Entrance {:d}: {:d} triangles selected.".format(k, np.sum(m_rho)))
+                print("  Entrance {:d}: {:d} triangles selected.".format(k, np.sum(m_rho)))
             # Geometric analysis, to derive area of surface elements on entrance wavefront, exit wavefront and exit aperture
             r1_ent,r2_ent,r3_ent = np.moveaxis(w_ent['position' ][m_ent][tris.simplices[m_rho]],1,0) # entrance triangulation vertex positions
             u1_ent,u2_ent,u3_ent = np.moveaxis(w_ent['direction'][m_ent][tris.simplices[m_rho]],1,0) # entrance triangulation vertex directions
-            r0_ent = np.sum(w_ent['position' ][m_ent][tris.simplices[m_rho]],axis=1)/3.              # entrance triangulation centroid positions
-            u0_ent = np.sum(w_ent['direction'][m_ent][tris.simplices[m_rho]],axis=1)/3.              # entrance triangulation centroid directions
+            r0_ent,u0_ent,_,na_ent = triangular_beam(r1_ent,u1_ent,r2_ent,u2_ent,r3_ent,u3_ent)
             r1_ext,r2_ext,r3_ext = np.moveaxis(w_ext['position' ][m_ent][tris.simplices[m_rho]],1,0) # exit triangulation vertex positions
             u1_ext,u2_ext,u3_ext = np.moveaxis(w_ext['direction'][m_ent][tris.simplices[m_rho]],1,0) # exit triangulation vertex directions
-            r0_ext = np.sum(w_ext['position' ][m_ent][tris.simplices[m_rho]],axis=1)/3.              # exit triangulation centroid positions
-            u0_ext = np.sum(w_ext['direction'][m_ent][tris.simplices[m_rho]],axis=1)/3.              # exit triangulation centroid directions
+            r0_ext,u0_ext,ba_ext,na_ext = triangular_beam(r1_ext,u1_ext,r2_ext,u2_ext,r3_ext,u3_ext)
+            if verbose:
+                print("  Entrance {:d}: triangle areas on wavefront at entrance {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
+                    k,np.min(na_ent),np.max(na_ent),np.mean(na_ent),np.std(na_ent)))
+                print("  Entrance {:d}: triangle areas on wavefront at exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
+                    k,np.min(na_ext),np.max(na_ext),np.mean(na_ext),np.std(na_ext)))
+                print("  Entrance {:d}: beam compressing from entrance to exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
+                    k,np.min(na_ent/na_ext),np.max(na_ent/na_ext),np.mean(na_ent/na_ext),np.std(na_ent/na_ext)))
             # Photometric analysis, to derive energy enclosed in each triangular beam
-            
+            d0_ext = np.mean(w_ext['distance' ][m_ent][tris.simplices[m_rho]])                       # exit triangulation centroid OPD
+            c0_ent = np.mean(w_ent['weight'   ][m_ent][tris.simplices[m_rho]])                       # entrance triangulation centroid weight (count of photons)
+            c0_ext = np.mean(w_ext['weight'   ][m_ent][tris.simplices[m_rho]])                       # exit triangulation centroid weight (count of photons)
             
         return w_ent, w_ext, i_ent
 
