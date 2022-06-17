@@ -11,6 +11,7 @@ import warnings
 import pymath.quaternion as quat
 import pymath.linsolvers as lins
 import pymath.statistics as stat
+import sys
 from scipy.spatial import Delaunay
 from time import time
 from mayavi import mlab
@@ -176,6 +177,41 @@ def triangular_beam(r1,u1,r2,u2,r3,u3):
     na = triangle_area(p1,p2,p3)
     return r0,u0,ba,na
 
+def kirchhoff_integrate(M,opd,r,u,n,dS,src,det,progress=True):
+    """Kirchhoff integrate
+    Arguments:
+    M   - relative intensities on exit
+    opd - optical path distances on exit
+    r   - positions of beam centers on exit, in lab coordinate system
+    u   - directions of beam centers on exit, in lab coordinate system
+    n   - normal vectors of surface elements on exit, in lab coordinate system
+    dS  - area of surface elements, in m2
+    src - light source object
+    det - detector object
+    Options:
+    progress  - boolean, show extra messages on integration progress or not
+    """
+    npts = opd.size # number of sampled points on exit
+    A = np.reshape(.5j/src.wavelength*dS*(src.intensity*M)**.5,(1,-1,1)) # i/2/lambda * A * dS
+    cos_n_r = np.sum(-u*n,axis=-1).reshape((1,-1,1))
+    if progress:
+        print("Kirchhoff integration:")
+        tic = time()
+    for i in range(det.npxs): # iterate on row indices of detector pixel grid
+        p = quat.rotate(det.q, [det.x[i,:],det.y[i,:],0.]).transpose() + det.p.reshape((-1,3))
+        s = p.reshape((-1,1,3))-r.reshape((1,-1,3))        # displacement matrix, by npxs x npts x 3
+        v = np.linalg.norm(s,axis=-1).reshape((-1,npts,1)) # distance matrix (abs(s)), by npxs x npts x 1
+        cos_n_s = np.sum(n.reshape((1,-1,3))*s,axis=-1).reshape((-1,npts,1))/v
+        d = opd.reshape((1,-1,1))+v
+        det.amplitude_map[i,:] += np.sum(A*np.exp(2.j*np.pi/src.wavelength*d)/v*(cos_n_s-cos_n_r),axis=1).ravel()
+        if progress:
+            sys.stdout.write("\r  {:4d}/{:d} ({:.1f}%) rows integrated, {:.2E} seconds elapsed, {:.2E} seconds per row...".format(
+                i+1,det.npxs,100.*(i+1.)/det.npxs,time()-tic,(time()-tic)/(i+1.)))
+            sys.stdout.flush()
+    if progress:
+        print("\nFinished.")
+    return
+    
 class LightSource(object):
     def __init__(self, location=(0., 0., np.inf), intensity=1e-10, wavelength=5e-7):
         """Create simple light source model.
@@ -1862,8 +1898,8 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
 
     def image(
             self, object_source, time_of_exposure,
-            batch_rays=10000,
-            min_samplings=10000,
+            batch_rays=1000,
+            min_samplings=1000,
             max_batches=100,
             min_precision=1e-9,
             verbose=False):
@@ -1982,6 +2018,14 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         w_ext = np.concatenate(w_ext)
         i_ent = np.concatenate(i_ent)
         #
+        # Initialize detector per-pixel complex amplitude maps
+        if verbose:
+            print("Initializing detector complex amplitude maps...")
+        for det in detectors:
+            det.amplitude_map[:] = 0.
+            if verbose:
+                print("  Detector {:d}: complex amplitude map clear.".format(optics.parts.index(det)))
+        #
         # Triangular beam analysis per entrance
         for k in np.unique(i_ent):
             if verbose:
@@ -2016,9 +2060,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 print("  Entrance {:d}: beam compressing from entrance to exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(na_ent/na_ext),np.max(na_ent/na_ext),np.mean(na_ent/na_ext),np.std(na_ent/na_ext)))
             # Photometric analysis, to derive energy enclosed in each triangular beam
-            d0_ext = np.mean(w_ext['distance' ][m_ent][tris.simplices[m_rho]])                       # exit triangulation centroid OPD
-            c0_ent = np.mean(w_ent['weight'   ][m_ent][tris.simplices[m_rho]])                       # entrance triangulation centroid weight (count of photons)
-            c0_ext = np.mean(w_ext['weight'   ][m_ent][tris.simplices[m_rho]])                       # exit triangulation centroid weight (count of photons)
+            d0_ext = np.mean(w_ext['distance' ][m_ent][tris.simplices[m_rho]],axis=-1)     # exit triangulation centroid OPD
+            c0_ent = np.mean(w_ent['weight'   ][m_ent][tris.simplices[m_rho]],axis=-1)     # entrance triangulation centroid weight (count of photons)
+            c0_ext = np.mean(w_ext['weight'   ][m_ent][tris.simplices[m_rho]],axis=-1)     # exit triangulation centroid weight (count of photons)
             if verbose:
                 print("  Entrance {:d}: photons per ray on entrance {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(c0_ent),np.max(c0_ent),np.mean(c0_ent),np.std(c0_ent)))
@@ -2034,11 +2078,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             if verbose:
                 print("  Entrance {:d}: relative intensity on exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(M0_ext),np.max(M0_ext),np.mean(M0_ext),np.std(M0_ext)))
-            if verbose:
-                print("Integrating on entrance {:d}...".format(k))
-            assert np.allclose(np.linalg.norm(n0_ext,axis=-1),1.)
-            assert np.allclose(np.linalg.norm(u0_ext,axis=-1),1.)
-            cos_n_r = np.sum(-n0_ext*u0_ext,axis=-1)
+            assert np.allclose(np.linalg.norm(n0_ext,axis=-1),1.), "Unit vector is not normalized."
+            assert np.allclose(np.linalg.norm(u0_ext,axis=-1),1.), "Unit vector is not normalized."
+            for det in detectors:
+                kirchhoff_integrate(M0_ext,d0_ext,r0_ext,u0_ext,n0_ext,ba_ext,object_source,det,progress=verbose)
         return w_ent, w_ext, i_ent
 
 class Detector(SymmetricQuadraticMirror):
@@ -2083,6 +2126,7 @@ class Detector(SymmetricQuadraticMirror):
         yi = ((np.arange(N)+.5)/N - .5)*a
         self.x, self.y = np.meshgrid(xi, yi)
         self.photon_buffer = np.empty((0,), dtype=sptype)
+        self.amplitude_map = np.empty((N,N), dtype='complex128')
         self.integrate = False
 
     def encounter(self, photon_in, intersection):
@@ -2104,13 +2148,11 @@ class Detector(SymmetricQuadraticMirror):
         pid = yid*self.npxs+xid
         re  = (self.photon_buffer['weight']**.5)*np.cos(np.mod(self.photon_buffer['distance'],self.photon_buffer['wavelength'])*np.pi*2.)
         im  = (self.photon_buffer['weight']**.5)*np.sin(np.mod(self.photon_buffer['distance'],self.photon_buffer['wavelength'])*np.pi*2.)
-        remap = np.bincount(pid.ravel(), weights=re, minlength=self.npxs*self.npxs)
-        immap = np.bincount(pid.ravel(), weights=im, minlength=self.npxs*self.npxs)
-        amp = np.reshape((remap**2.+immap**2.)**.5, (self.npxs, self.npxs))
-        pha = np.ma.masked_array(np.reshape(np.arctan2(immap, remap), (self.npxs, self.npxs)), mask=~(amp>0.))
+        self.amplitude_map.real[:] = np.reshape(np.bincount(pid.ravel(), weights=re, minlength=self.npxs*self.npxs), (self.npxs,self.npxs))
+        self.amplitude_map.imag[:] = np.reshape(np.bincount(pid.ravel(), weights=im, minlength=self.npxs*self.npxs), (self.npxs,self.npxs))
         if clear_buffer:
             self.photon_buffer = np.empty((0,), dtype=sptype)
-        return amp, pha
+        return self.amplitude_map
 
 class ImagingSystem(OpticalSystem):
     def __init__(self):
