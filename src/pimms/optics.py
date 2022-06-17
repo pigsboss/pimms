@@ -12,6 +12,7 @@ import pymath.quaternion as quat
 import pymath.linsolvers as lins
 import pymath.statistics as stat
 import sys
+import os
 from scipy.spatial import Delaunay
 from time import time
 from mayavi import mlab
@@ -19,7 +20,6 @@ from matplotlib import rcParams
 from pymath.common import norm
 
 hc = 1.98644586e-25 # speed of light * planck constant, in m3/kg/s2.
-dm = 1e-5           # mirror safe thickness to separate top from bottom, in m.
 
 # super photon properties data type:
 sptype = np.dtype([
@@ -177,7 +177,7 @@ def triangular_beam(r1,u1,r2,u2,r3,u3):
     na = triangle_area(p1,p2,p3)
     return r0,u0,ba,na
 
-def kirchhoff_integrate(M,opd,r,u,n,dS,src,det,progress=True):
+def kirchhoff_integrate(M,opd,r,u,n,dS,src,det,batch_size=2**24,progress=True):
     """Kirchhoff integrate
     Arguments:
     M   - relative intensities on exit
@@ -192,22 +192,29 @@ def kirchhoff_integrate(M,opd,r,u,n,dS,src,det,progress=True):
     progress  - boolean, show extra messages on integration progress or not
     """
     npts = opd.size # number of sampled points on exit
+    batch_rows = max(1,batch_size//npts//det.npxs)
     A = np.reshape(.5j/src.wavelength*dS*(src.intensity*M)**.5,(1,-1,1)) # i/2/lambda * A * dS
+    C = 2.j*np.pi/src.wavelength
     cos_n_r = np.sum(-u*n,axis=-1).reshape((1,-1,1))
     if progress:
         print("Kirchhoff integration:")
         tic = time()
-    for i in range(det.npxs): # iterate on row indices of detector pixel grid
-        p = quat.rotate(det.q, [det.x[i,:],det.y[i,:],0.]).transpose() + det.p.reshape((-1,3))
+    i = 0
+    ne.set_num_threads(8)
+    while i<det.npxs: # iterate on row indices of detector pixel grid
+        t = min(det.npxs-i,batch_rows)
+        p = quat.rotate(det.q, [det.x[i:i+t,:].ravel(),det.y[i:i+t,:].ravel(),0.]).transpose() + det.p.reshape((-1,3))
         s = p.reshape((-1,1,3))-r.reshape((1,-1,3))        # displacement matrix, by npxs x npts x 3
         v = np.linalg.norm(s,axis=-1).reshape((-1,npts,1)) # distance matrix (abs(s)), by npxs x npts x 1
         cos_n_s = np.sum(n.reshape((1,-1,3))*s,axis=-1).reshape((-1,npts,1))/v
         d = opd.reshape((1,-1,1))+v
-        det.amplitude_map[i,:] += np.sum(A*np.exp(2.j*np.pi/src.wavelength*d)/v*(cos_n_s-cos_n_r),axis=1).ravel()
+        det.amplitude_map[i:i+t,:] += np.sum(
+            ne.evaluate("A*exp(C*d)/v*(cos_n_s-cos_n_r)"),axis=1).reshape((-1,det.npxs))
         if progress:
             sys.stdout.write("\r  {:4d}/{:d} ({:.1f}%) rows integrated, {:.2E} seconds elapsed, {:.2E} seconds per row...".format(
-                i+1,det.npxs,100.*(i+1.)/det.npxs,time()-tic,(time()-tic)/(i+1.)))
+                i+t,det.npxs,100.*(i+t)/det.npxs,time()-tic,(time()-tic)/(i+t)))
             sys.stdout.flush()
+        i += t
     if progress:
         print("\nFinished.")
     return
@@ -1897,16 +1904,20 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         return np.concatenate(samplings)
 
     def image(
-            self, object_source, time_of_exposure,
+            self,
+            object_source,
+            detector,
+            time_of_exposure,
             batch_rays=1000,
             min_samplings=1000,
             max_batches=100,
             min_precision=1e-9,
             verbose=False):
-        """Calculate end-to-end image with Huygens-Fresnel integration.
+        """Calculate end-to-end image with Kirchhoff integration.
 
         Arguments:
         object_source
+        detector
         time_of_exposure
         batch_rays
         min_samplings
@@ -1916,13 +1927,11 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         """
         optics = self.graph['optical_system']
         entrance_nodes = optics.get_entrance()
-        detectors = optics.get_detectors()
         fov = optics.fov()
         #
         # Validation
         assert isinstance(optics, ImagingSystem), "The underlying object must be an imaging system."
         assert len(entrance_nodes)>0, "No entrance found."
-        assert len(detectors)>0, "No detector found."
         #
         # Locate object source
         if np.isinf(object_source.rho):
@@ -1941,9 +1950,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             warnings.warn("Object is out of FoV.", RuntimeWarning)
         #
         # Find indices of exit nodes where photons set off for the detector(s)
-        extidx = [] # indices of exit nodes
-        for det in detectors:
-            extidx += [optics.parts.index(obj) for obj in self.predecessors(det)]
+        extidx = [optics.parts.index(obj) for obj in self.predecessors(detector)]
         assert len(extidx)>0, "No exit nodes found."
         #
         # Collecting exit pupil samplings
@@ -2019,12 +2026,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         i_ent = np.concatenate(i_ent)
         #
         # Initialize detector per-pixel complex amplitude maps
-        if verbose:
-            print("Initializing detector complex amplitude maps...")
-        for det in detectors:
-            det.amplitude_map[:] = 0.
-            if verbose:
-                print("  Detector {:d}: complex amplitude map clear.".format(optics.parts.index(det)))
+        detector.amplitude_map[:] = 0.
         #
         # Triangular beam analysis per entrance
         for k in np.unique(i_ent):
@@ -2080,8 +2082,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                     k,np.min(M0_ext),np.max(M0_ext),np.mean(M0_ext),np.std(M0_ext)))
             assert np.allclose(np.linalg.norm(n0_ext,axis=-1),1.), "Unit vector is not normalized."
             assert np.allclose(np.linalg.norm(u0_ext,axis=-1),1.), "Unit vector is not normalized."
-            for det in detectors:
-                kirchhoff_integrate(M0_ext,d0_ext,r0_ext,u0_ext,n0_ext,ba_ext,object_source,det,progress=verbose)
+            kirchhoff_integrate(M0_ext,d0_ext,r0_ext,u0_ext,n0_ext,ba_ext,object_source,detector,progress=verbose)
         return w_ent, w_ext, i_ent
 
 class Detector(SymmetricQuadraticMirror):
