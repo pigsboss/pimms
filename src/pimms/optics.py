@@ -1983,9 +1983,9 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         i_ent = np.concatenate(i_ent)
         #
         # Triangular beam analysis per entrance
-        if verbose:
-            print("Triangular beam analyzing...")
         for k in np.unique(i_ent):
+            if verbose:
+                print("Triangular beam analyzing on entrance {:d}...".format(k))
             m_ent = np.bool_(i_ent==k)
             tris = Delaunay(w_ent['position'][m_ent][:,:2]) # construct initial triangulation
             if verbose:
@@ -2007,7 +2007,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             r0_ext,u0_ext,ba_ext,na_ext = triangular_beam(r1_ext,u1_ext,r2_ext,u2_ext,r3_ext,u3_ext)
             n0init = np.cross(r2_ext-r1_ext, r3_ext-r1_ext)
             n0norm = np.linalg.norm(n0init,axis=-1).reshape((-1,1))
-            n0_ext = np.where(np.reshape(np.sum(u1_ext*n0init,axis=-1)>0,(-1,1)), n0init/n0norm, -n0init/n0norm)
+            n0_ext = np.where(np.reshape(np.sum(u0_ext*n0init,axis=-1)>0,(-1,1)), n0init/n0norm, -n0init/n0norm)
             if verbose:
                 print("  Entrance {:d}: triangle areas on wavefront at entrance {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(na_ent),np.max(na_ent),np.mean(na_ent),np.std(na_ent)))
@@ -2027,14 +2027,18 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
                 print("  Entrance {:d}: photons transmittance {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(c0_ext/c0_ent),np.max(c0_ext/c0_ent),np.mean(c0_ext/c0_ent),np.std(c0_ext/c0_ent)))
             if np.isinf(object_source.rho):
-                I0_ext = object_source.intensity*na_ent/na_ext*c0_ext/c0_ent/object_source.energy
+                M0_ext = na_ent/na_ext*c0_ext/c0_ent
             else:
-                I0_ext = object_source.intensity*object_source.rho/\
-                    np.linalg.norm(np.reshape(object_source.direction*object_source.rho,(-1,3))-r0_ent,axis=-1)*\
-                    na_ent/na_ext*c0_ext/c0_ent/object_source.energy
+                M0_ext = na_ent/na_ext*c0_ext/c0_ent*object_source.rho/\
+                    np.linalg.norm(np.reshape(object_source.direction*object_source.rho,(-1,3))-r0_ent,axis=-1)
             if verbose:
-                print("  Entrance {:d}: intensity on exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std), in photons/s/m2.".format(
-                    k,np.min(I0_ext),np.max(I0_ext),np.mean(I0_ext),np.std(I0_ext)))
+                print("  Entrance {:d}: relative intensity on exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
+                    k,np.min(M0_ext),np.max(M0_ext),np.mean(M0_ext),np.std(M0_ext)))
+            if verbose:
+                print("Integrating on entrance {:d}...".format(k))
+            assert np.allclose(np.linalg.norm(n0_ext,axis=-1),1.)
+            assert np.allclose(np.linalg.norm(u0_ext,axis=-1),1.)
+            cos_n_r = np.sum(-n0_ext*u0_ext,axis=-1)
         return w_ent, w_ext, i_ent
 
 class Detector(SymmetricQuadraticMirror):
