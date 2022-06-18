@@ -1912,6 +1912,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             min_samplings=1000,
             max_batches=100,
             min_precision=1e-9,
+            collect_runtime_data=False,
             verbose=False):
         """Calculate end-to-end image with Kirchhoff integration.
 
@@ -1925,9 +1926,12 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         min_precision
         verbose
         """
+        runtime_data = {}
         optics = self.graph['optical_system']
         entrance_nodes = optics.get_entrance()
         fov = optics.fov()
+        if collect_runtime_data:
+            runtime_data['optics_fov'] = fov
         #
         # Validation
         assert isinstance(optics, ImagingSystem), "The underlying object must be an imaging system."
@@ -1952,6 +1956,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         # Find indices of exit nodes where photons set off for the detector(s)
         extidx = [optics.parts.index(obj) for obj in self.predecessors(detector)]
         assert len(extidx)>0, "No exit nodes found."
+        if collect_runtime_data:
+            runtime_data['object_longitude_in_optics_system' ] = phi_obj
+            runtime_data['object_colatitude_in_optics_system'] = theta_obj
+            runtime_data['exit_parts_indices'                ] = extidx
         #
         # Collecting exit pupil samplings
         num_samplings = 0
@@ -2024,6 +2032,10 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         w_ent = np.concatenate(w_ent)
         w_ext = np.concatenate(w_ext)
         i_ent = np.concatenate(i_ent)
+        if collect_runtime_data:
+            runtime_data['object_rays_at_entrance'   ] = w_ent
+            runtime_data['object_rays_at_exit'       ] = w_ext
+            runtime_data['object_rays_entrance_index'] = i_ent
         #
         # Initialize detector per-pixel complex amplitude maps
         detector.amplitude_map[:] = 0.
@@ -2032,6 +2044,7 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
         for k in np.unique(i_ent):
             if verbose:
                 print("Triangular beam analyzing on entrance {:d}...".format(k))
+            runtime_data['TBA_entrance_{:d}'.format(k)] = {}
             m_ent = np.bool_(i_ent==k)
             tris = Delaunay(w_ent['position'][m_ent][:,:2]) # construct initial triangulation
             if verbose:
@@ -2080,10 +2093,30 @@ class OpticalPathNetwork(nx.classes.digraph.DiGraph):
             if verbose:
                 print("  Entrance {:d}: relative intensity on exit {:.2E} (min), {:.2E} (max), {:.2E} (avg), {:.2E} (std).".format(
                     k,np.min(M0_ext),np.max(M0_ext),np.mean(M0_ext),np.std(M0_ext)))
+            if collect_runtime_data:
+                runtime_data['TBA_entrance_{:d}'.format(k)]['delaunay_triangles_initial'  ] = tris
+                runtime_data['TBA_entrance_{:d}'.format(k)]['delaunay_triangles_mask'     ] = np.bool_(~m_rho)
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_vertices_position'  ] = [r1_ent,r2_ent,r3_ent]
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_vertices_direction' ] = [u1_ent,u2_ent,u3_ent]
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_vertices_position'      ] = [r1_ext,r2_ext,r3_ext]
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_vertices_direction'     ] = [u1_ext,u2_ext,u3_ext]
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_centroids_position' ] = r0_ent
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_centroids_direction'] = u1_ent
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_centroids_position'     ] = r0_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_centroids_direction'    ] = u1_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_beam_normal_area'   ] = na_ent
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_beam_normal_area'       ] = na_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_beam_bottom_area'       ] = ba_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_beam_bottom_direction'  ] = n0_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_centroids_OPD'      ] = np.mean(w_ent['distance'][m_ent][tris.simplices[m_rho]],axis=-1)
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_centroids_OPD'          ] = d0_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['entrance_centroids_weight'   ] = c0_ent
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_centroids_weight'       ] = c0_ext
+                runtime_data['TBA_entrance_{:d}'.format(k)]['exit_beam_relative_intensity'] = M0_ext
             assert np.allclose(np.linalg.norm(n0_ext,axis=-1),1.), "Unit vector is not normalized."
             assert np.allclose(np.linalg.norm(u0_ext,axis=-1),1.), "Unit vector is not normalized."
             kirchhoff_integrate(M0_ext,d0_ext,r0_ext,u0_ext,n0_ext,ba_ext,object_source,detector,progress=verbose)
-        return w_ent, w_ext, i_ent
+        return runtime_data
 
 class Detector(SymmetricQuadraticMirror):
     """Pixel-array photon detector model.
